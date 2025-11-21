@@ -18,4 +18,16 @@ To host a game, you first need to log in as a host; it will ask you for a passwo
 
 You can test this out yourself with multiple browser tabs.
 
-You can monitor the lobby as the host and remove players if you want to. When all players have registered, you can start the game. The app will automatically assign students to teams and roles (at random) and fill teams with robo players (called Beer-GPT) if the number of students in the lobby is not divisible by 4. 
+You can monitor the lobby as the host and remove players if you want to. When all players have registered, you can start the game. The app will automatically assign students to teams and roles (at random) and fill teams with robo players (called Beer-GPT) if the number of students in the lobby is not divisible by 4.
+
+## Game Rules
+
+The game uses the standard beer game demand and cost data. Shipping lead time is 2, but order lead time is only 1 - downstream partners will see the order placed in the prior period.
+
+The game lasts 40 periods, but can be ended at any time in the host's view. Upon completion, the host will see a leaderboard and graphs for all supply chains, showing their orders. Each supply chain will see its own total costs, as well as a graph of all orders in the supply chain.
+
+Beer-GPT players will always place an order based on the demand they see, +/-1.
+
+## Feedback
+
+Provide any general feedback about the game at [this Google doc](https://docs.google.com/document/d/1HgR_ZYDW3X7Hj-f2chM5Yn7ay8UJtEKwUhdIEUQ4YoE/edit?usp=sharing).
