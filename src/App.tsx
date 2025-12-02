@@ -3,6 +3,7 @@ import React, { useState } from "react";
 import HostLobby from "./components/HostLobby";
 import PlayerJoin from "./components/PlayerJoin";
 import PlayerView from "./components/PlayerView";
+import titleBg from "./beergametitle.png";
 
 type View = "home" | "host" | "join" | "player";
 
@@ -26,13 +27,20 @@ const App: React.FC = () => {
             display: "flex",
             flexDirection: "column",
             gap: "1rem",
+            backgroundImage:
+              `linear-gradient(135deg, rgba(255,255,255,0.92), rgba(255,255,255,0.85)), url(${titleBg})`,
+            backgroundSize: "cover",
+            backgroundPosition: "center",
+            borderRadius: "1rem",
+            padding: "1.25rem",
+            boxShadow: "0 12px 30px rgba(0,0,0,0.12)",
           }}
         >
           <div>
-            <h1>Beer Distribution Classroom Game</h1>
-            <p style={{ maxWidth: "600px" }}>
-              React + Firebase implementation. Host creates a game and
-              students join as Retailer, Wholesaler, Distributor, or Factory.
+            <h1 style={{ marginBottom: "0.35rem" }}>The Beer Game</h1>
+            <p style={{ maxWidth: "600px", marginTop: 0 }}>
+              If you are the host, please click on <strong>Host the Game</strong>.
+              If you are a student, please click on <strong>Join the Game</strong>.
             </p>
           </div>
           <div

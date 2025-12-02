@@ -3,6 +3,7 @@ import React, { useEffect, useState, useRef } from "react";
 import { db } from "../firebase";
 import { doc, onSnapshot, updateDoc } from "firebase/firestore";
 import { GameConfig, Role, TeamState, ROLES } from "../logic/gameModel";
+import waitingBg from "../waitingscreen.png";
 
 const PLAYER_GAME_CODE_KEY = "beerGame_player_gameCode";
 const PLAYER_ID_KEY = "beerGame_player_playerId";
@@ -126,9 +127,21 @@ const PlayerView: React.FC = () => {
     return <div>Loading player session…</div>;
   }
 
+  const hasCompletedAllWeeks =
+    !!team && team.currentWeek > (config?.nWeeks ?? Number.MAX_SAFE_INTEGER);
+  const isGameOverForPlayer = gameStatus === "ended" || hasCompletedAllWeeks;
+
   if (gameStatus === "lobby") {
     return (
-      <div>
+      <div
+        style={{
+          minHeight: "100vh",
+          backgroundImage: `linear-gradient(rgba(255,255,255,0.9), rgba(255,255,255,0.9)), url(${waitingBg})`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          padding: "1.25rem",
+        }}
+      >
         <h2>Lobby</h2>
         <p>
           Hi <strong>{player.name}</strong>, you have joined game{" "}
@@ -141,7 +154,15 @@ const PlayerView: React.FC = () => {
 
   if (gameStatus === "in_progress" && (!player.teamId || !player.role)) {
     return (
-      <div>
+      <div
+        style={{
+          minHeight: "100vh",
+          backgroundImage: `linear-gradient(rgba(255,255,255,0.9), rgba(255,255,255,0.9)), url(${waitingBg})`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          padding: "1.25rem",
+        }}
+      >
         <h2>Assigning teams…</h2>
         <p>
           The host has started the game. You will be placed into a team and role
@@ -151,7 +172,7 @@ const PlayerView: React.FC = () => {
     );
   }
 
-  if (gameStatus === "ended") {
+  if (isGameOverForPlayer) {
     return (
       <div style={{ padding: "1rem" }}>
         <h2>Game over</h2>
@@ -288,8 +309,10 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
     partnerDownstream ? partnerDownstream.delay2 : 0
   );
 
-  // Order input – clear each week (no previous order bias)
+  // Order input — clear each week (no previous order bias)
   const [orderInput, setOrderInput] = useState<string>("");
+  const [showClampedNotice, setShowClampedNotice] = useState(false);
+  const [pendingHighOrder, setPendingHighOrder] = useState<number | null>(null);
 
   // Store previous week's values so we can animate from them
   const prevRef = useRef({
@@ -618,12 +641,30 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
   }, [week, animationsEnabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSubmit = () => {
-    const parsed = parseInt(orderInput, 10);
-    if (Number.isNaN(parsed) || parsed < 0) {
-      alert("Please enter a non-negative order quantity.");
+    if (orderAlreadySubmitted || !canOrder) return;
+
+    const raw = Number(orderInput);
+    if (Number.isNaN(raw)) {
       return;
     }
-    onSubmitOrder(parsed);
+
+    const normalized = Math.round(raw);
+
+    if (normalized < 0) {
+      const clamped = 0;
+      setOrderInput(clamped.toString());
+      setShowClampedNotice(true);
+      onSubmitOrder(clamped);
+      return;
+    }
+
+    if (normalized > 50) {
+      setPendingHighOrder(normalized);
+      return;
+    }
+
+    setOrderInput(normalized.toString());
+    onSubmitOrder(normalized);
   };
 
   const supplyChainCostSoFar = team.totalCost;
@@ -1157,6 +1198,50 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
           {bannerText}
         </div>
       )}
+
+      {/* Order clamped notice */}
+      {showClampedNotice && (
+        <OverlayCard
+          title="Order adjusted to 0"
+          onClose={() => setShowClampedNotice(false)}
+          actions={[
+            {
+              label: "Got it",
+              onClick: () => setShowClampedNotice(false),
+              variant: "primary",
+            },
+          ]}
+        >
+          Your order cannot be negative. We set your order to 0 for this week.
+        </OverlayCard>
+      )}
+
+      {/* High order confirmation */}
+      {pendingHighOrder !== null && (
+        <OverlayCard
+          title="Large order entered"
+          onClose={() => setPendingHighOrder(null)}
+          actions={[
+            {
+              label: "Use this order",
+              variant: "primary",
+              onClick: () => {
+                if (pendingHighOrder === null) return;
+                setOrderInput(pendingHighOrder.toString());
+                onSubmitOrder(pendingHighOrder);
+                setPendingHighOrder(null);
+              },
+            },
+            {
+              label: "Revise order",
+              onClick: () => setPendingHighOrder(null),
+            },
+          ]}
+        >
+          You entered an order of <strong>{pendingHighOrder}</strong>. Are you
+          sure you want to submit this amount?
+        </OverlayCard>
+      )}
     </div>
   );
 };
@@ -1254,6 +1339,106 @@ const PostIt: React.FC<PostItProps> = ({ label, value, hidden }) => (
       }}
     >
       {hidden ? "❓" : value}
+    </div>
+  </div>
+);
+
+interface OverlayAction {
+  label: string;
+  onClick: () => void;
+  variant?: "primary" | "secondary";
+}
+
+interface OverlayCardProps {
+  title: string;
+  onClose?: () => void;
+  actions: OverlayAction[];
+  children: React.ReactNode;
+}
+
+const OverlayCard: React.FC<OverlayCardProps> = ({
+  title,
+  onClose,
+  actions,
+  children,
+}) => (
+  <div
+    style={{
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.35)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "1rem",
+      zIndex: 1000,
+    }}
+  >
+    <div
+      style={{
+        minWidth: 280,
+        maxWidth: 420,
+        background: "#fffaf0",
+        border: "1px solid #e2cfa0",
+        borderRadius: "0.75rem",
+        boxShadow: "0 8px 20px rgba(0,0,0,0.2)",
+        padding: "1rem",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: "0.5rem",
+          gap: "0.5rem",
+        }}
+      >
+        <h3 style={{ margin: 0, color: "#5a3a00" }}>{title}</h3>
+        {onClose && (
+          <button
+            onClick={onClose}
+            style={{
+              border: "1px solid #d6c094",
+              borderRadius: "0.5rem",
+              background: "#fff7e0",
+              padding: "0.25rem 0.5rem",
+              cursor: "pointer",
+            }}
+          >
+            Close
+          </button>
+        )}
+      </div>
+      <div style={{ color: "#4a3513", fontSize: "0.95rem" }}>{children}</div>
+      <div
+        style={{
+          marginTop: "0.75rem",
+          display: "flex",
+          gap: "0.5rem",
+          justifyContent: "flex-end",
+          flexWrap: "wrap",
+        }}
+      >
+        {actions.map((action) => (
+          <button
+            key={action.label}
+            onClick={action.onClick}
+            style={{
+              padding: "0.4rem 0.75rem",
+              borderRadius: "0.6rem",
+              border: "1px solid #d6c094",
+              background:
+                action.variant === "primary" ? "#f0a500" : "#fff7e0",
+              color: action.variant === "primary" ? "#fff" : "#5a3a00",
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            {action.label}
+          </button>
+        ))}
+      </div>
     </div>
   </div>
 );
@@ -1360,11 +1545,8 @@ const TeamOrdersChart: React.FC<TeamOrdersChartProps> = ({ team }) => {
     1
   );
 
-  const allValues = series.flatMap((s) => s.values);
-  const maxVal =
-    allValues.length > 0
-      ? allValues.reduce((max, v) => Math.max(max, v), 1)
-      : 1;
+  // Standardized y-axis for all teams
+  const maxVal = 25;
 
   const width = 360;
   const height = 160;
@@ -1385,7 +1567,8 @@ const TeamOrdersChart: React.FC<TeamOrdersChartProps> = ({ team }) => {
   };
 
   const getY = (value: number) => {
-    const t = value / maxVal;
+    const val = Math.max(value, 0); // allow values > maxVal to go above chart
+    const t = val / maxVal;
     return paddingTop + (1 - t) * plotHeight;
   };
 

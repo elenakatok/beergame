@@ -10,7 +10,9 @@ import {
   query,
   serverTimestamp,
   where,
+  writeBatch,
 } from "firebase/firestore";
+import { ROLES } from "../logic/gameModel";
 
 const PLAYER_GAME_CODE_KEY = "beerGame_player_gameCode";
 const PLAYER_ID_KEY = "beerGame_player_playerId";
@@ -71,9 +73,8 @@ const PlayerJoin: React.FC<PlayerJoinProps> = ({ onJoined }) => {
         localStorage.setItem(PLAYER_ROLE_KEY, "pending");
 
         onJoined();
-      } else {
-        // Game already started or ended: try to REATTACH this player
-        // by matching their name in this game.
+      } else if (status === "in_progress") {
+        // Game already started: try to REATTACH this player by name first.
         const qPlayers = query(
           playersRef,
           where("name", "==", trimmedName)
@@ -81,9 +82,71 @@ const PlayerJoin: React.FC<PlayerJoinProps> = ({ onJoined }) => {
         const existingSnap = await getDocs(qPlayers);
 
         if (existingSnap.empty) {
-          setError(
-            "This game is already in progress or has ended, and we couldn't find a matching player with that name. Please check the game ID and name, or ask your instructor."
-          );
+          // No existing player with this name: try to replace a robot seat.
+          const teamsRef = collection(gameRef, "teams");
+          const teamsSnap = await getDocs(teamsRef);
+          const robotSeats: {
+            teamId: string;
+            teamName: string | null;
+            role: string;
+            humanCount: number;
+          }[] = [];
+
+          teamsSnap.forEach((t) => {
+            const data = t.data() as any;
+            const stages = data.stages || {};
+            const humanCount =
+              typeof data.humanCount === "number" ? data.humanCount : 0;
+            ROLES.forEach((role) => {
+              const stage = stages[role];
+              if (stage && stage.isRobot) {
+                robotSeats.push({
+                  teamId: t.id,
+                  teamName: data.name ?? null,
+                  role,
+                  humanCount,
+                });
+              }
+            });
+          });
+
+          if (robotSeats.length === 0) {
+            setError(
+              "This game is already in progress and all seats are taken. Please check with your instructor."
+            );
+            setLoading(false);
+            return;
+          }
+
+          const seat =
+            robotSeats[Math.floor(Math.random() * robotSeats.length)];
+
+          const batch = writeBatch(db);
+          const playerRef = doc(playersRef);
+          batch.set(playerRef, {
+            name: trimmedName,
+            createdAt: serverTimestamp(),
+            teamId: seat.teamId,
+            role: seat.role,
+            isRobot: false,
+            teamName: seat.teamName,
+          });
+
+          const teamRef = doc(gameRef, "teams", seat.teamId);
+          batch.update(teamRef, {
+            [`stages.${seat.role}.playerId`]: playerRef.id,
+            [`stages.${seat.role}.playerName`]: trimmedName,
+            [`stages.${seat.role}.isRobot`]: false,
+            humanCount: Math.max(0, seat.humanCount + 1),
+          });
+
+          await batch.commit();
+
+          localStorage.setItem(PLAYER_GAME_CODE_KEY, code);
+          localStorage.setItem(PLAYER_ID_KEY, playerRef.id);
+          localStorage.setItem(PLAYER_ROLE_KEY, seat.role);
+
+          onJoined();
           setLoading(false);
           return;
         }
@@ -99,6 +162,11 @@ const PlayerJoin: React.FC<PlayerJoinProps> = ({ onJoined }) => {
         );
 
         onJoined();
+      } else {
+        // Game ended
+        setError(
+          "This game has already ended and cannot accept new players."
+        );
       }
     } catch (err) {
       console.error(err);

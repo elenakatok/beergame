@@ -42,6 +42,8 @@ const HostLobby: React.FC = () => {
     "lobby" | "in_progress" | "ended" | null
   >(null);
   const [config, setConfig] = useState<GameConfig | null>(null);
+  const [configDraft, setConfigDraft] = useState<GameConfig>(defaultConfig());
+  const [editingSettings, setEditingSettings] = useState(false);
   const [players, setPlayers] = useState<LobbyPlayer[]>([]);
   const [teams, setTeams] = useState<TeamState[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -75,7 +77,11 @@ const HostLobby: React.FC = () => {
         }
         const data = snap.data() as any;
         setGameStatus(data.status);
-        setConfig(data.config as GameConfig);
+        const cfg = data.config as GameConfig;
+        setConfig(cfg);
+        if (cfg) {
+          setConfigDraft(cfg);
+        }
       },
       (err) => {
         console.error("Error subscribing to game:", err);
@@ -207,7 +213,7 @@ const HostLobby: React.FC = () => {
       setError(null);
       const code = generateGameCode(4);
       const gameRef = doc(db, "games", code);
-      const cfg = defaultConfig();
+      const cfg = sanitizeConfig(configDraft || defaultConfig());
       await setDoc(gameRef, {
         status: "lobby",
         createdAt: serverTimestamp(),
@@ -215,6 +221,8 @@ const HostLobby: React.FC = () => {
       });
       localStorage.setItem(HOST_GAME_CODE_KEY, code);
       setGameCode(code);
+      setConfig(cfg);
+      setConfigDraft(cfg);
     } catch (err) {
       console.error(err);
       setError("Failed to create a new game.");
@@ -229,6 +237,123 @@ const HostLobby: React.FC = () => {
     await deleteDoc(ref);
   };
 
+  const sanitizeConfig = (cfg: GameConfig): GameConfig => {
+    const nWeeks = Math.max(1, Math.round(cfg.nWeeks));
+    const inventoryCost = Math.max(0, Number(cfg.inventoryCost) || 0);
+    const backlogCost = Math.max(0, Number(cfg.backlogCost) || 0);
+    return {
+      ...cfg,
+      nWeeks,
+      inventoryCost,
+      backlogCost,
+      customerDemand: cfg.customerDemand,
+    };
+  };
+
+  const handleSaveConfig = async () => {
+    if (!gameCode) return;
+    const nextCfg = sanitizeConfig(configDraft);
+    const gameRef = doc(db, "games", gameCode);
+    await updateDoc(gameRef, { config: nextCfg });
+    setConfig(nextCfg);
+    setConfigDraft(nextCfg);
+    setEditingSettings(false);
+  };
+
+  const handleBeginEdit = () => {
+    setConfigDraft(config || defaultConfig());
+    setEditingSettings(true);
+  };
+
+  const handleCancelEdit = () => {
+    setConfigDraft(config || defaultConfig());
+    setEditingSettings(false);
+  };
+
+  const handleDownloadPlayers = async () => {
+    if (!gameCode) return;
+    try {
+      const playersRef = collection(db, "games", gameCode, "players");
+      const snap = await getDocs(playersRef);
+      if (snap.empty) {
+        alert("No players found for this session.");
+        return;
+      }
+
+      const rows: string[][] = [
+        ["name", "teamId", "teamName", "role", "isRobot"],
+      ];
+
+      snap.forEach((d) => {
+        const data = d.data() as any;
+        rows.push([
+          data.name ?? "",
+          data.teamId ?? "",
+          data.teamName ?? "",
+          data.role ?? "",
+          String(data.isRobot ?? false),
+        ]);
+      });
+
+      const escape = (val: string) => {
+        const s = `${val ?? ""}`;
+        if (s.includes('"') || s.includes(",") || s.includes("\n")) {
+          return `"${s.replace(/"/g, '""')}"`;
+        }
+        return s;
+      };
+
+      const csv = rows.map((r) => r.map(escape).join(",")).join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `beer-game-players-${gameCode}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Failed to export players", err);
+      alert("Failed to export player list.");
+    }
+  };
+
+  const handleKickToRobot = async (teamId: string, role: Role) => {
+    if (!gameCode) return;
+    const team = teams.find((t) => t.id === teamId);
+    if (!team) return;
+    const stage = team.stages[role];
+    if (!stage || stage.isRobot) return;
+
+    const playerLabel = stage.playerName || "this player";
+    const confirmed = window.confirm(
+      `Remove ${playerLabel} from ${team.name} (${role}) and replace with a robot?`
+    );
+    if (!confirmed) return;
+
+    const teamRef = doc(db, "games", gameCode, "teams", teamId);
+    const updates: Record<string, any> = {
+      [`stages.${role}.playerId`]: null,
+      [`stages.${role}.playerName`]: "Beer GPT",
+      [`stages.${role}.isRobot`]: true,
+      humanCount: Math.max(0, (team.humanCount ?? 0) - 1),
+    };
+
+    await updateDoc(teamRef, updates);
+
+    if (stage.playerId) {
+      const playerRef = doc(
+        db,
+        "games",
+        gameCode,
+        "players",
+        stage.playerId
+      );
+      await deleteDoc(playerRef);
+    }
+  };
+
   const handleStartGame = async () => {
     if (!gameCode || !config) return;
     if (players.length === 0) {
@@ -237,6 +362,7 @@ const HostLobby: React.FC = () => {
     }
 
     try {
+      await handleSaveConfig();
       const gameRef = doc(db, "games", gameCode);
       const playersRef = collection(gameRef, "players");
       const snap = await getDocs(playersRef);
@@ -468,6 +594,78 @@ const HostLobby: React.FC = () => {
         >
           <h3>Lobby</h3>
           <p>Share the Game ID above with students so they can join.</p>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+              gap: "0.75rem",
+              margin: "0.75rem 0",
+            }}
+          >
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: "0.85rem", color: "#444" }}>
+                Number of rounds
+              </span>
+              <input
+                type="number"
+                min={1}
+                value={configDraft.nWeeks}
+                disabled={!editingSettings}
+                onChange={(e) =>
+                  setConfigDraft((prev) => ({
+                    ...prev,
+                    nWeeks: parseInt(e.target.value, 10) || 0,
+                  }))
+                }
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: "0.85rem", color: "#444" }}>
+                Holding cost (per unit)
+              </span>
+              <input
+                type="number"
+                min={0}
+                step="0.1"
+                value={configDraft.inventoryCost}
+                disabled={!editingSettings}
+                onChange={(e) =>
+                  setConfigDraft((prev) => ({
+                    ...prev,
+                    inventoryCost: parseFloat(e.target.value) || 0,
+                  }))
+                }
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: "0.85rem", color: "#444" }}>
+                Backlog cost (per unit)
+              </span>
+              <input
+                type="number"
+                min={0}
+                step="0.1"
+                value={configDraft.backlogCost}
+                disabled={!editingSettings}
+                onChange={(e) =>
+                  setConfigDraft((prev) => ({
+                    ...prev,
+                    backlogCost: parseFloat(e.target.value) || 0,
+                  }))
+                }
+              />
+            </label>
+          </div>
+          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem" }}>
+            {!editingSettings ? (
+              <button onClick={handleBeginEdit}>Edit settings</button>
+            ) : (
+              <>
+                <button onClick={handleSaveConfig}>Save session settings</button>
+                <button onClick={handleCancelEdit}>Cancel</button>
+              </>
+            )}
+          </div>
           {players.length === 0 ? (
             <p>No players have joined yet.</p>
           ) : (
@@ -569,6 +767,18 @@ const HostLobby: React.FC = () => {
                               <span>
                                 {isRobot ? "🤖" : submitted ? "✅" : "⌛"}
                               </span>
+                              {!isRobot && (
+                                <button
+                                  onClick={() => handleKickToRobot(t.id, r)}
+                                  style={{
+                                    fontSize: "0.7rem",
+                                    padding: "0.15rem 0.4rem",
+                                    borderRadius: "0.4rem",
+                                  }}
+                                >
+                                  Kick to robot
+                                </button>
+                              )}
                             </div>
                           </td>
                         );
@@ -591,6 +801,9 @@ const HostLobby: React.FC = () => {
           }}
         >
           <h3>Leaderboard</h3>
+          <div style={{ marginBottom: "0.5rem" }}>
+            <button onClick={handleDownloadPlayers}>Download player list (CSV)</button>
+          </div>
           {teams.length === 0 ? (
             <p>No teams found.</p>
           ) : (
@@ -680,11 +893,8 @@ const TeamOrdersChart: React.FC<TeamOrdersChartProps> = ({ team }) => {
     1
   );
 
-  const allValues = series.flatMap((s) => s.values);
-  const maxVal =
-    allValues.length > 0
-      ? allValues.reduce((max, v) => Math.max(max, v), 1)
-      : 1;
+  // Standardized y-axis for all teams
+  const maxVal = 25;
 
   const width = 360;
   const height = 160;
@@ -705,7 +915,8 @@ const TeamOrdersChart: React.FC<TeamOrdersChartProps> = ({ team }) => {
   };
 
   const getY = (value: number) => {
-    const t = value / maxVal;
+    const val = Math.max(value, 0); // allow values > maxVal to go above chart
+    const t = val / maxVal;
     return paddingTop + (1 - t) * plotHeight;
   };
 
