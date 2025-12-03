@@ -2,6 +2,26 @@
 
 This is an open-source implementation of the classic beer game by Jay Forrester. The beer game is an excellent introduction to supply chain management and illustrates the bullwhip effect to students.
 
+## Version Update
+
+We ran the game with two classes of 50 students at Koc University in Istanbul. It ran well, but we immediately spotted some features that would improve the experience.
+
+The most recent version includes the following changes:
+
+* The game now automatically shows the ending screen for players who have finished all rounds of the game
+* If players enter a negative order, the order is replace with 0
+* If players enter an order above 50, they get a warning pop-up and are allowed to revise their order. Sometimes, players accidentally double-tap a key.
+* The ending graphs of orders have a standardized y-scale that maxes out at 25
+* The host can replace players with robo-players in the host screen; this is necessary when students sign in twice (creating a ghost in the system), or when students leave early.
+* Players who join late (after a session starts) can still join by replacing robo players
+* The host can tweak some game parameters in the upfront screen
+* The host can download a list of players after the session is complete
+* Added some AI generated graphics to the sign up and waiting screens
+
+## Hosting
+
+I host this version of the game [here](https://go.wisc.edu/394776). Hosting is free to a certain point - about 200 people can play the beer game a day, and I won't be charged. But I will incur some small costs if usage goes beyond. I will pay for these costs on my own, but if you become a heavy user in your classes, I would appreciate a cost share. Message me at esiemsen@wisc.edu if you are using the product a lot. If costs become too high, I may turn off the app. I added a guide of how to setup hosting yourself, for free, [here](https://github.com/siemsene/beergame/blob/main/Howtohost.md).
+
 ## Other Beer Games
 
 You can buy the original beer game materials from the [System Dynamics Society](https://systemdynamics.org/product/supply-chain-game-the-beer-game-complete-game-set/). There are other free online versions of the beer game available, such as those at [Transentis](https://beergame.transentis.com/) or [MA Systems](https://beergame.masystem.se/). There are also paid versions at [HB Online](https://hbsp.harvard.edu/product/7908-HTM-ENG), [Zensimu](https://zensimu.com/p/beer-game/), and [FathomD](https://www.fathomd.com/bdg).
