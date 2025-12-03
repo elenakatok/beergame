@@ -2,6 +2,7 @@
 // src/firebase.ts
 import { initializeApp } from "firebase/app";
 import { getFirestore, setLogLevel } from "firebase/firestore";
+import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "firebase/app-check";
 
 // Enable verbose Firestore logging in dev to surface permission/connection issues.
 if (import.meta.env.DEV) {
@@ -40,6 +41,19 @@ if (missingKeys.length > 0) {
 }
 
 const app = initializeApp(firebaseConfig);
+
+if (import.meta.env.DEV) {
+  // @ts-expect-error - runtime-only debug token on `self` for App Check (not present in TypeScript DOM types)
+  self.FIREBASE_APPCHECK_DEBUG_TOKEN = true;
+}
+
+// Initialize App Check without assigning the returned value to avoid unused variable.
+initializeAppCheck(app, {
+  provider: new ReCaptchaEnterpriseProvider(
+    import.meta.env.VITE_APPCHECK_RECAPTCHA_SITE_KEY
+  ),
+  isTokenAutoRefreshEnabled: true,
+});
 
 export const db = getFirestore(app);
 
