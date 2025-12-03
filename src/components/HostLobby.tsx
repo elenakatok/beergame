@@ -13,6 +13,7 @@ import {
   setDoc,
   updateDoc,
   writeBatch,
+  where,
 } from "firebase/firestore";
 import {
   defaultConfig,
@@ -34,6 +35,13 @@ interface LobbyPlayer {
   name: string;
 }
 
+interface ActiveSession {
+  id: string;
+  status: "lobby" | "in_progress";
+  createdAt?: any;
+  config?: GameConfig;
+}
+
 const HostLobby: React.FC = () => {
   const [hostSecret, setHostSecret] = useState("");
   const [hostAuthed, setHostAuthed] = useState(false);
@@ -48,6 +56,9 @@ const HostLobby: React.FC = () => {
   const [teams, setTeams] = useState<TeamState[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [activeSessions, setActiveSessions] = useState<ActiveSession[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
 
   // Reattach host session (only when user is on Host view)
   useEffect(() => {
@@ -58,6 +69,43 @@ const HostLobby: React.FC = () => {
       setGameCode(storedCode);
     }
   }, []);
+
+  // List all active sessions so multiple hosts can pick one or start new
+  useEffect(() => {
+    if (!hostAuthed) return;
+    setSessionsLoading(true);
+    const gamesRef = collection(db, "games");
+    const q = query(gamesRef, where("status", "in", ["lobby", "in_progress"]));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const sessions = snap.docs
+          .map((d) => {
+            const data = d.data() as any;
+            return {
+              id: d.id,
+              status: data.status as "lobby" | "in_progress",
+              createdAt: data.createdAt,
+              config: data.config as GameConfig,
+            };
+          })
+          .sort(
+            (a, b) =>
+              (b.createdAt?.toMillis?.() ?? 0) -
+              (a.createdAt?.toMillis?.() ?? 0)
+          );
+        setActiveSessions(sessions);
+        setSessionsError(null);
+        setSessionsLoading(false);
+      },
+      (err) => {
+        console.error("Error loading sessions", err);
+        setSessionsError("Failed to load active sessions.");
+        setSessionsLoading(false);
+      }
+    );
+    return unsub;
+  }, [hostAuthed]);
 
   // Subscribe to game doc
   useEffect(() => {
@@ -90,14 +138,6 @@ const HostLobby: React.FC = () => {
     );
     return unsub;
   }, [gameCode]);
-
-  // If host is authed but there is no active game, auto-create one
-  useEffect(() => {
-    if (hostAuthed && !gameCode && !creating) {
-      createNewGame();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hostAuthed, gameCode, creating]);
 
   // Lobby players
   useEffect(() => {
@@ -202,9 +242,14 @@ const HostLobby: React.FC = () => {
     const storedCode = localStorage.getItem(HOST_GAME_CODE_KEY);
     if (storedCode) {
       setGameCode(storedCode);
-      return;
     }
-    await createNewGame();
+  };
+
+  const resetSessionState = () => {
+    setGameStatus(null);
+    setConfig(null);
+    setPlayers([]);
+    setTeams([]);
   };
 
   const createNewGame = async () => {
@@ -234,6 +279,13 @@ const HostLobby: React.FC = () => {
     } finally {
       setCreating(false);
     }
+  };
+
+  const handleSelectSession = (code: string) => {
+    resetSessionState();
+    setError(null);
+    localStorage.setItem(HOST_GAME_CODE_KEY, code);
+    setGameCode(code);
   };
 
   const handleRemovePlayer = async (playerId: string) => {
@@ -501,9 +553,24 @@ const HostLobby: React.FC = () => {
   };
 
   const handleNewSession = async () => {
+    resetSessionState();
+    localStorage.removeItem(HOST_GAME_CODE_KEY);
+    await createNewGame();
+  };
+
+  const handleClearSelection = () => {
+    resetSessionState();
     localStorage.removeItem(HOST_GAME_CODE_KEY);
     setGameCode(null);
-    await createNewGame();
+  };
+
+  const formatCreatedAt = (val: any) => {
+    if (!val || typeof val.toDate !== "function") return "Created recently";
+    try {
+      return `Created ${val.toDate().toLocaleString()}`;
+    } catch {
+      return "Created recently";
+    }
   };
 
   if (!hostAuthed) {
@@ -537,11 +604,103 @@ const HostLobby: React.FC = () => {
     );
   }
 
+  const sessionPicker = (
+    <div
+      style={{
+        padding: "0.75rem 1rem",
+        borderRadius: "0.75rem",
+        border: "1px solid #ddd",
+        background: "#f6fbff",
+        display: "flex",
+        flexDirection: "column",
+        gap: "0.5rem",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: "0.5rem",
+        }}
+      >
+        <h3 style={{ margin: 0 }}>Active sessions</h3>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          <button onClick={handleNewSession} disabled={creating}>
+            {creating ? "Starting..." : "Start a new session"}
+          </button>
+          {gameCode && (
+            <button onClick={handleClearSelection} style={{ fontSize: "0.85rem" }}>
+              Switch session
+            </button>
+          )}
+        </div>
+      </div>
+      <p style={{ margin: 0, fontSize: "0.9rem", color: "#444" }}>
+        Join an existing lobby or in-progress game as host, or spin up a new session
+        for another class.
+      </p>
+      {sessionsLoading ? (
+        <p style={{ margin: 0 }}>Loading sessions...</p>
+      ) : sessionsError ? (
+        <p style={{ margin: 0, color: "red" }}>{sessionsError}</p>
+      ) : activeSessions.length === 0 ? (
+        <p style={{ margin: 0 }}>No active sessions right now. Start a new one above.</p>
+      ) : (
+        <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+          {activeSessions.map((s) => (
+            <li
+              key={s.id}
+              style={{
+                border: "1px solid #e3e8ee",
+                borderRadius: "0.5rem",
+                padding: "0.5rem 0.75rem",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "0.5rem",
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+                  <span style={{ fontWeight: 700, fontFamily: "monospace" }}>{s.id}</span>
+                  <span style={{ fontSize: "0.85rem", color: "#555" }}>
+                    {s.status === "lobby" ? "Lobby open" : "In progress"}
+                  </span>
+                </div>
+                <span style={{ fontSize: "0.8rem", color: "#666" }}>
+                  {formatCreatedAt(s.createdAt)}
+                </span>
+                {s.config && (
+                  <span style={{ fontSize: "0.8rem", color: "#555" }}>
+                    {s.config.nWeeks} rounds | Holding ${s.config.inventoryCost.toFixed(2)} | Backlog $
+                    {s.config.backlogCost.toFixed(2)}
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={() => handleSelectSession(s.id)}
+                disabled={gameCode === s.id}
+              >
+                {gameCode === s.id ? "Managing" : "Join as host"}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+
   if (!gameCode || !config) {
     return (
-      <div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
         <h2>Host View</h2>
-        <p>Setting up session...</p>
+        {sessionPicker}
+        {!gameCode ? (
+          <p>Select an existing session above or start a new one to manage the game.</p>
+        ) : (
+          <p>Loading session {gameCode}...</p>
+        )}
         {error && (
           <div style={{ color: "red", fontSize: "0.9rem" }}>{error}</div>
         )}
@@ -552,6 +711,7 @@ const HostLobby: React.FC = () => {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       <h2>Host View</h2>
+      {sessionPicker}
       <div
         style={{
           padding: "0.75rem 1rem",
