@@ -1,0 +1,77 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Only allow access under /games/{gameId}/...
+    match /games/{gameId} {
+      // Everyone can read game state
+      allow read: if true;
+
+      // Create/update the game doc with basic shape checks
+      allow create, update: if isValidGame(request.resource.data);
+      // Prevent deleting the game doc (optional: relax if you want)
+      allow delete: if false;
+
+      // Players joining a game
+      match /players/{playerId} {
+        allow read: if true;
+        allow create, update: if isValidPlayer(request.resource.data);
+        allow delete: if true; // host removes players
+      }
+
+      // Teams created/updated by host flow
+      match /teams/{teamId} {
+        allow read: if true;
+        allow create, update: if isValidTeam(request.resource.data);
+        allow delete: if false;
+      }
+    }
+
+    // Block everything else
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+
+function nonEmptyString(val, maxLen) {
+  return val is string && val.size() > 0 && val.size() <= maxLen;
+}
+
+function optionalString(val, maxLen) {
+  return val == null || (val is string && val.size() <= maxLen);
+}
+
+function optionalRole(val) {
+  return val == null || val in ['retailer', 'wholesaler', 'distributor', 'factory'];
+}
+
+function isValidGame(data) {
+  return data is map
+    && data.status in ['lobby', 'in_progress', 'ended']
+    && data.config is map
+    && data.config.nWeeks is int && data.config.nWeeks >= 1 && data.config.nWeeks <= 200
+    && data.config.inventoryCost is number && data.config.inventoryCost >= 0
+    && data.config.backlogCost is number && data.config.backlogCost >= 0
+    && data.config.customerDemand is list
+    && data.config.customerDemand.size() > 0
+    && data.config.customerDemand.size() <= 400;
+    // createdAt can be serverTimestamp; no strict check to avoid blocking clients
+}
+
+function isValidPlayer(data) {
+  return data is map
+    && nonEmptyString(data.name, 64)
+    && (!('role' in data) || optionalRole(data.role))
+    && (!('teamId' in data) || data.teamId == null || data.teamId is string)
+    && (!('teamName' in data) || optionalString(data.teamName, 64))
+    && (!('isRobot' in data) || data.isRobot is bool);
+}
+
+function isValidTeam(data) {
+  return data is map
+    && nonEmptyString(data.name, 64)
+    && data.currentWeek is int && data.currentWeek >= 0 && data.currentWeek <= 400
+    && (!('humanCount' in data) || data.humanCount is int);
+    // Allow stages/order fields to pass through from the app.
+}

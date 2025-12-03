@@ -68,7 +68,7 @@ const HostLobby: React.FC = () => {
       (snap) => {
         if (!snap.exists()) {
           // Game was deleted, clear stored code and ask to create new session
-          setError("Game not found. Creating a new session…");
+          setError("Game not found. Creating a new session...");
           setGameStatus(null);
           setConfig(null);
           localStorage.removeItem(HOST_GAME_CODE_KEY);
@@ -211,6 +211,7 @@ const HostLobby: React.FC = () => {
     try {
       setCreating(true);
       setError(null);
+      console.log("Creating new game session...");
       const code = generateGameCode(4);
       const gameRef = doc(db, "games", code);
       const cfg = sanitizeConfig(configDraft || defaultConfig());
@@ -224,8 +225,12 @@ const HostLobby: React.FC = () => {
       setConfig(cfg);
       setConfigDraft(cfg);
     } catch (err) {
-      console.error(err);
-      setError("Failed to create a new game.");
+      console.error("Failed to create a new game", err);
+      const msg =
+        err instanceof Error && err.message
+          ? err.message
+          : "Failed to create a new game.";
+      setError(msg);
     } finally {
       setCreating(false);
     }
@@ -536,7 +541,7 @@ const HostLobby: React.FC = () => {
     return (
       <div>
         <h2>Host View</h2>
-        <p>Setting up session…</p>
+        <p>Setting up session...</p>
         {error && (
           <div style={{ color: "red", fontSize: "0.9rem" }}>{error}</div>
         )}
@@ -704,7 +709,7 @@ const HostLobby: React.FC = () => {
         >
           <h3>Teams overview</h3>
           {teams.length === 0 ? (
-            <p>Waiting for teams to load…</p>
+            <p>Waiting for teams to load...</p>
           ) : (
             <table
               style={{
@@ -765,7 +770,7 @@ const HostLobby: React.FC = () => {
                                 {stage.playerName || "Beer GPT"}
                               </span>
                               <span>
-                                {isRobot ? "🤖" : submitted ? "✅" : "⌛"}
+                                {isRobot ? "🤖" : submitted ? "✅" : "⏳"}
                               </span>
                               {!isRobot && (
                                 <button
@@ -824,7 +829,7 @@ const HostLobby: React.FC = () => {
 
                     return (
                       <li key={t.id}>
-                        <strong>{t.name}</strong> — total cost $
+                        <strong>{t.name}</strong>  -  total cost $
                         {totalCost.toFixed(2)} (players: {humans}, robots:{" "}
                         {4 - humans})
                       </li>

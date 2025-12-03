@@ -1,16 +1,43 @@
+/// <reference types="vite/client" />
 // src/firebase.ts
 import { initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { getFirestore, setLogLevel } from "firebase/firestore";
+
+// Enable verbose Firestore logging in dev to surface permission/connection issues.
+if (import.meta.env.DEV) {
+  setLogLevel("debug");
+}
 
 const firebaseConfig = {
-  apiKey: "REDACTED_API_KEY",
-  authDomain: "beer-game-f65a8.firebaseapp.com",
-  projectId: "beer-game-f65a8",
-  storageBucket: "beer-game-f65a8.firebasestorage.app",
-  messagingSenderId: "904687304214",
-  appId: "1:904687304214:web:ce51dfd4c4b0c9cf4fbf37",
-  measurementId: "G-FQFZJWCR3F"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 };
+
+const requiredKeys: Array<keyof typeof firebaseConfig> = [
+  "apiKey",
+  "authDomain",
+  "projectId",
+  "storageBucket",
+  "messagingSenderId",
+  "appId",
+];
+
+const missingKeys = requiredKeys.filter(
+  (key) => !firebaseConfig[key] || firebaseConfig[key]?.length === 0
+);
+
+if (missingKeys.length > 0) {
+  throw new Error(
+    `Missing Firebase config values: ${missingKeys.join(
+      ", "
+    )}. Check your .env VITE_FIREBASE_* settings.`
+  );
+}
 
 const app = initializeApp(firebaseConfig);
 
