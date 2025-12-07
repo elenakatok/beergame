@@ -56,6 +56,8 @@ const HostLobby: React.FC = () => {
   const [teams, setTeams] = useState<TeamState[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const advancingTeamsRef = React.useRef<Set<string>>(new Set());
+
   const [activeSessions, setActiveSessions] = useState<ActiveSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
@@ -207,21 +209,40 @@ const HostLobby: React.FC = () => {
           );
         if (!allSubmitted) continue;
 
+        // If we are already advancing this team, skip to prevent re-entry
+        if (advancingTeamsRef.current.has(team.id)) continue;
+
         const teamRef = doc(db, "games", gameCode, "teams", team.id);
         const partialOrders = (team.pendingOrders || {}) as any;
 
         try {
+          // Regenerate demand array to ensure it's not stale and matches nWeeks.
+          // This is the key fix for the retailer demand bug.
+          const liveConfig = {
+            ...config,
+            customerDemand: Array.from({ length: config.nWeeks }, (_, i) =>
+              i < 4 ? 4 : 8
+            ),
+          };
+
           const orders = computeOrdersForWeek(
             team,
-            config,
+            liveConfig,
             partialOrders
           );
-          const { nextTeam } = simulateWeek(team, config, orders);
+
+          // Lock this team to prevent re-simulation
+          advancingTeamsRef.current.add(team.id);
+
+          const { nextTeam } = simulateWeek(team, liveConfig, orders);
           nextTeam.pendingOrders = {};
           nextTeam.ordersSubmitted = {};
           await setDoc(teamRef, nextTeam);
         } catch (err) {
           console.error("Failed to advance team", team.id, err);
+        } finally {
+          // Always unlock the team after the attempt
+          advancingTeamsRef.current.delete(team.id);
         }
       }
     };
@@ -304,6 +325,7 @@ const HostLobby: React.FC = () => {
       inventoryCost,
       backlogCost,
       customerDemand: cfg.customerDemand,
+      extraOrderDelay: !!cfg.extraOrderDelay,
     };
   };
 
@@ -819,6 +841,28 @@ const HostLobby: React.FC = () => {
                   }))
                 }
               />
+            </label>
+            <label
+              style={{
+                display: "flex",
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+                gridColumn: "1 / -1",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={configDraft.extraOrderDelay ?? false}
+                disabled={!editingSettings}
+                onChange={(e) =>
+                  setConfigDraft((prev) => ({
+                    ...prev,
+                    extraOrderDelay: e.target.checked,
+                  }))
+                }
+              />
+              <span>Extra Order Delay (2-week information delay)</span>
             </label>
           </div>
           <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem" }}>

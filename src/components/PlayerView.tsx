@@ -679,7 +679,8 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
       : getIncomingFromLabel(role);
 
   const incomingValue =
-    role === "retailer"
+    me.incomingOrder ??
+    (role === "retailer"
       ? (() => {
           const demandIndex = Math.min(
             week - 1,
@@ -687,7 +688,7 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
           );
           return config.customerDemand[demandIndex];
         })()
-      : me.incomingOrder;
+      : 0);
 
   const postItOrderValue =
     orderInput.trim() === "" ? undefined : parseInt(orderInput, 10);

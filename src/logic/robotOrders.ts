@@ -41,12 +41,13 @@ export function computeOrdersForWeek(
     let baseDemand = 0;
 
     if (role === "retailer") {
-      // Retailer robots see the same exogenous demand as human retailers.
+      // Retailer robots react to the demand they actually saw last week.
+      // Fall back to config if the incomingOrder is missing (e.g., very first tick).
       const demandIndex = Math.min(
         Math.max(0, week - 1),
         config.customerDemand.length - 1
       );
-      baseDemand = config.customerDemand[demandIndex] ?? 0;
+      baseDemand = stage.incomingOrder ?? config.customerDemand[demandIndex] ?? 0;
     } else {
       // Upstream robots see the incoming order from their downstream partner.
       baseDemand = stage.incomingOrder ?? 0;

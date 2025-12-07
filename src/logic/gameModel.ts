@@ -1,5 +1,6 @@
 // src/logic/gameModel.ts
 
+import { OrdersForWeek } from "./gameEngine";
 export type Role = "retailer" | "wholesaler" | "distributor" | "factory";
 
 export const ROLES: Role[] = [
@@ -14,6 +15,7 @@ export interface GameConfig {
   inventoryCost: number;
   backlogCost: number;
   customerDemand: number[];
+  extraOrderDelay: boolean;
 }
 
 export interface WeekRecord {
@@ -52,6 +54,8 @@ export interface TeamState {
   ordersSubmitted: Partial<Record<Role, boolean>>;
   // orders for this week (humans only; robots are derived)
   pendingOrders: Partial<Record<Role, number>>;
+  // orders from the PREVIOUS week, used for extra delay
+  previousWeekOrders: OrdersForWeek;
   // per-week total supply-chain cost
   supplyChainCostHistory: number[];
   // number of human players on the team
@@ -68,6 +72,7 @@ export function defaultConfig(): GameConfig {
     inventoryCost: 0.5,
     backlogCost: 1.0,
     customerDemand,
+    extraOrderDelay: false,
   };
 }
 
@@ -100,6 +105,12 @@ export function createInitialTeamState(id: string, name: string): TeamState {
     },
     ordersSubmitted: {},
     pendingOrders: {},
+    previousWeekOrders: {
+      retailer: 4,
+      wholesaler: 4,
+      distributor: 4,
+      factory: 4,
+    },
     supplyChainCostHistory: [],
     humanCount: 0,
   };

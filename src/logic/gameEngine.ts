@@ -46,21 +46,41 @@ export function simulateWeek(
     s.delay2 = 0;
   }
 
+  // If extra delay is on, the demand comes from the orders placed two weeks ago.
+  const demandSource = config.extraOrderDelay ? team.previousWeekOrders : orders;
+
   // 2) Ship to meet demand + backlog
+  // The week is 1-based, the array is 0-based.
+  // For week 1, we need index 0. For week 5, we need index 4.
+  // Clamp to the last known demand value so we don't silently fall back to 4
+  const lastDemandIndex = Math.max(0, config.customerDemand.length);
+  const customerDemandIndex = Math.min(
+    Math.max(0, week),
+    lastDemandIndex
+  );
+  const nextCustomerDemandIndex = Math.min(
+    Math.max(0, week), // next week (week is 1-based)
+    lastDemandIndex
+  );
+  const currentCustomerDemand =
+    config.customerDemand[customerDemandIndex] ??
+    config.customerDemand[lastDemandIndex] ??
+    4;
+  const nextCustomerDemand =
+    config.customerDemand[nextCustomerDemandIndex] ?? currentCustomerDemand;
   for (const role of ROLES) {
     const s = team.stages[role];
 
     let baseDemand: number;
     if (role === "retailer") {
-      const demandIndex = Math.min(week, config.customerDemand.length - 1);
-      baseDemand = config.customerDemand[demandIndex];
+      baseDemand = currentCustomerDemand;
     } else if (role === "wholesaler") {
-      baseDemand = orders.retailer;
+      baseDemand = demandSource.retailer;
     } else if (role === "distributor") {
-      baseDemand = orders.wholesaler;
+      baseDemand = demandSource.wholesaler;
     } else {
       // factory
-      baseDemand = orders.distributor;
+      baseDemand = demandSource.distributor;
     }
 
     const totalDemand = baseDemand + s.backlog;
@@ -94,14 +114,15 @@ export function simulateWeek(
   team.stages.distributor.delay2 += shipmentsOut.factory;
 
   // Factory's delay2 is production (what will enter its own inventory after 2 weeks)
-  team.stages.factory.delay2 += orders.factory;
+  team.stages.factory.delay2 = orders.factory;
 
   // 4) Record the orders seen this week (for UI)
-  const demandIndex = Math.min(week - 1, config.customerDemand.length - 1);
-  team.stages.retailer.incomingOrder = config.customerDemand[demandIndex];
-  team.stages.wholesaler.incomingOrder = orders.retailer;
-  team.stages.distributor.incomingOrder = orders.wholesaler;
-  team.stages.factory.incomingOrder = orders.distributor;
+  // Retailer can know next week's exogenous demand up front; store it so the UI shows
+  // the demand that will be fulfilled in the upcoming week (avoids off-by-one display).
+  team.stages.retailer.incomingOrder = nextCustomerDemand;
+  team.stages.wholesaler.incomingOrder = demandSource.retailer;
+  team.stages.distributor.incomingOrder = demandSource.wholesaler;
+  team.stages.factory.incomingOrder = demandSource.distributor;
 
   // 5) Costs aggregated over supply chain
   const totalWeekCost = ROLES.reduce(
@@ -113,7 +134,8 @@ export function simulateWeek(
 
   team.currentWeek = week + 1;
   team.ordersSubmitted = {};
-  team.pendingOrders = {};
+  // The orders from this turn (t-1) become the previous week's orders for the next turn (t+1)
+  team.previousWeekOrders = orders;
 
   return { nextTeam: team, costByRole };
 }
