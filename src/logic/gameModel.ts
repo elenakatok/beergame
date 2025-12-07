@@ -16,6 +16,7 @@ export interface GameConfig {
   backlogCost: number;
   customerDemand: number[];
   extraOrderDelay: boolean;
+  displayUpstreamBackorders?: boolean;
 }
 
 export interface WeekRecord {
@@ -73,6 +74,7 @@ export function defaultConfig(): GameConfig {
     backlogCost: 1.0,
     customerDemand,
     extraOrderDelay: false,
+    displayUpstreamBackorders: false,
   };
 }
 

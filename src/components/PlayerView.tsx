@@ -276,6 +276,14 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
       : role === "wholesaler"
       ? team.stages["retailer"]
       : null;
+  const partnerUpstream =
+    role === "retailer"
+      ? team.stages["wholesaler"]
+      : role === "wholesaler"
+      ? team.stages["distributor"]
+      : role === "distributor"
+      ? team.stages["factory"]
+      : null;
 
   const [phase, setPhase] = useState<Phase>(0);
   const [canOrder, setCanOrder] = useState(false);
@@ -697,6 +705,13 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
 
   const outgoingPartner = getOutgoingPartnerLabel(role);
   const incomingPartner = getIncomingPartnerLabel(role);
+  const upstreamPartnerName = getUpstreamPartnerName(role);
+  const upstreamBacklog =
+    partnerUpstream && partnerUpstream.backlog > 0
+      ? partnerUpstream.backlog
+      : 0;
+  const showUpstreamBackorders =
+    !!config.displayUpstreamBackorders && upstreamBacklog > 0;
 
   const hasBacklog = displayBacklog > 0;
   const isOverstocked = displayInventory > 40;
@@ -1179,6 +1194,58 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
                 : "Please wait for animations…"}
             </button>
           </div>
+
+          {showUpstreamBackorders && partnerUpstream && (
+            <div
+              style={{
+                padding: "0.75rem",
+                borderRadius: "0.75rem",
+                background: "#fff2f0",
+                border: "1px solid #f3b4ad",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "0.8rem",
+                  fontWeight: 600,
+                  color: "#8b5e00",
+                  marginBottom: "0.25rem",
+                }}
+              >
+                Units on backorder with your{" "}
+                {upstreamPartnerName ? upstreamPartnerName : "supplier"}
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: "0.35rem",
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: "2rem",
+                    fontWeight: 700,
+                    color: "#a02020",
+                  }}
+                >
+                  {upstreamBacklog}
+                </span>
+                <span style={{ color: "#7a5a1f", fontSize: "0.9rem" }}>
+                  units
+                </span>
+              </div>
+              <div
+                style={{
+                  fontSize: "0.85rem",
+                  color: "#7a5a1f",
+                  marginTop: "0.35rem",
+                }}
+              >
+                Your upstream partner is currently behind on fulfilling shipments.
+              </div>
+            </div>
+          )}
         </section>
       </main>
 
@@ -1516,6 +1583,20 @@ function getIncomingPartnerLabel(role: Role): string | null {
       return "from your Factory";
     default:
       return null; // factory has production pipeline instead
+  }
+}
+
+// Name of the upstream supplier (for the backorder display)
+function getUpstreamPartnerName(role: Role): string | null {
+  switch (role) {
+    case "retailer":
+      return "Wholesaler";
+    case "wholesaler":
+      return "Distributor";
+    case "distributor":
+      return "Factory";
+    default:
+      return null;
   }
 }
 

@@ -340,6 +340,7 @@ const HostLobby: React.FC = () => {
       backlogCost,
       customerDemand: cfg.customerDemand,
       extraOrderDelay: !!cfg.extraOrderDelay,
+      displayUpstreamBackorders: !!cfg.displayUpstreamBackorders,
     };
   };
 
@@ -911,6 +912,28 @@ const HostLobby: React.FC = () => {
                 }
               />
               <span>Extra Order Delay (2-week information delay)</span>
+            </label>
+            <label
+              style={{
+                display: "flex",
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+                gridColumn: "1 / -1",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={configDraft.displayUpstreamBackorders ?? false}
+                disabled={!editingSettings}
+                onChange={(e) =>
+                  setConfigDraft((prev) => ({
+                    ...prev,
+                    displayUpstreamBackorders: e.target.checked,
+                  }))
+                }
+              />
+              <span>Display Units on Backorder (show upstream partner backlog)</span>
             </label>
             <label style={{ display: "flex", flexDirection: "column", gap: 4, gridColumn: "1 / -1" }}>
               <span style={{ fontSize: "0.85rem", color: "#444" }}>
