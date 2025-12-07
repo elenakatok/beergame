@@ -292,7 +292,7 @@ const HostLobby: React.FC = () => {
       const code = generateGameCode(4);
       const gameRef = doc(db, "games", code);
       const cfg = sanitizeConfig(defaultConfig());
-      const notes = sessionNotesDraft || "";
+      const notes = "";
       await setDoc(gameRef, {
         status: "lobby",
         createdAt: serverTimestamp(),
@@ -304,6 +304,7 @@ const HostLobby: React.FC = () => {
       setConfig(cfg);
       setConfigDraft(cfg);
       setSessionNotes(notes);
+      setSessionNotesDraft(notes);
     } catch (err) {
       console.error("Failed to create a new game", err);
       const msg =
@@ -356,6 +357,14 @@ const HostLobby: React.FC = () => {
     setConfigDraft(nextCfg);
     setSessionNotes(sessionNotesDraft || "");
     setEditingSettings(false);
+  };
+
+  const handleSaveNotes = async () => {
+    if (!gameCode) return;
+    const gameRef = doc(db, "games", gameCode);
+    const notes = sessionNotesDraft || "";
+    await updateDoc(gameRef, { notes });
+    setSessionNotes(notes);
   };
 
   const handleBeginEdit = () => {
@@ -935,19 +944,6 @@ const HostLobby: React.FC = () => {
               />
               <span>Display Units on Backorder (show upstream partner backlog)</span>
             </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4, gridColumn: "1 / -1" }}>
-              <span style={{ fontSize: "0.85rem", color: "#444" }}>
-                Session notes (visible to hosts)
-              </span>
-              <textarea
-                rows={3}
-                value={sessionNotesDraft}
-                disabled={!editingSettings}
-                onChange={(e) => setSessionNotesDraft(e.target.value)}
-                style={{ resize: "vertical" }}
-                placeholder="Add context for this session (class, cohort, etc.)"
-              />
-            </label>
           </div>
           <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem" }}>
             {!editingSettings ? (
@@ -958,6 +954,28 @@ const HostLobby: React.FC = () => {
                 <button onClick={handleCancelEdit}>Cancel</button>
               </>
             )}
+          </div>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              marginTop: "0.25rem",
+            }}
+          >
+            <span style={{ fontSize: "0.85rem", color: "#444" }}>
+              Session notes (visible to hosts)
+            </span>
+            <textarea
+              rows={3}
+              value={sessionNotesDraft}
+              onChange={(e) => setSessionNotesDraft(e.target.value)}
+              style={{ resize: "vertical" }}
+              placeholder="Enter the details of your session (which university, purpose, etc.) here"
+            />
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+              <button onClick={handleSaveNotes}>Save notes</button>
+            </div>
           </div>
           {players.length === 0 ? (
             <p>No players have joined yet.</p>
