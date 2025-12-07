@@ -40,6 +40,7 @@ interface ActiveSession {
   status: "lobby" | "in_progress";
   createdAt?: any;
   config?: GameConfig;
+  notes?: string;
 }
 
 const HostLobby: React.FC = () => {
@@ -57,6 +58,8 @@ const HostLobby: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const advancingTeamsRef = React.useRef<Set<string>>(new Set());
+  const [sessionNotes, setSessionNotes] = useState("");
+  const [sessionNotesDraft, setSessionNotesDraft] = useState("");
 
   const [activeSessions, setActiveSessions] = useState<ActiveSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
@@ -89,6 +92,8 @@ const HostLobby: React.FC = () => {
               status: data.status as "lobby" | "in_progress",
               createdAt: data.createdAt,
               config: data.config as GameConfig,
+              notes:
+                typeof data.notes === "string" ? data.notes : "",
             };
           })
           .sort(
@@ -132,6 +137,9 @@ const HostLobby: React.FC = () => {
         if (cfg) {
           setConfigDraft(cfg);
         }
+        const notes = typeof data.notes === "string" ? data.notes : "";
+        setSessionNotes(notes);
+        setSessionNotesDraft(notes);
       },
       (err) => {
         console.error("Error subscribing to game:", err);
@@ -271,6 +279,9 @@ const HostLobby: React.FC = () => {
     setConfig(null);
     setPlayers([]);
     setTeams([]);
+    setConfigDraft(defaultConfig());
+    setSessionNotes("");
+    setSessionNotesDraft("");
   };
 
   const createNewGame = async () => {
@@ -280,16 +291,19 @@ const HostLobby: React.FC = () => {
       console.log("Creating new game session...");
       const code = generateGameCode(4);
       const gameRef = doc(db, "games", code);
-      const cfg = sanitizeConfig(configDraft || defaultConfig());
+      const cfg = sanitizeConfig(defaultConfig());
+      const notes = sessionNotesDraft || "";
       await setDoc(gameRef, {
         status: "lobby",
         createdAt: serverTimestamp(),
         config: cfg,
+        notes,
       });
       localStorage.setItem(HOST_GAME_CODE_KEY, code);
       setGameCode(code);
       setConfig(cfg);
       setConfigDraft(cfg);
+      setSessionNotes(notes);
     } catch (err) {
       console.error("Failed to create a new game", err);
       const msg =
@@ -333,19 +347,25 @@ const HostLobby: React.FC = () => {
     if (!gameCode) return;
     const nextCfg = sanitizeConfig(configDraft);
     const gameRef = doc(db, "games", gameCode);
-    await updateDoc(gameRef, { config: nextCfg });
+    await updateDoc(gameRef, {
+      config: nextCfg,
+      notes: sessionNotesDraft || "",
+    });
     setConfig(nextCfg);
     setConfigDraft(nextCfg);
+    setSessionNotes(sessionNotesDraft || "");
     setEditingSettings(false);
   };
 
   const handleBeginEdit = () => {
     setConfigDraft(config || defaultConfig());
+    setSessionNotesDraft(sessionNotes);
     setEditingSettings(true);
   };
 
   const handleCancelEdit = () => {
     setConfigDraft(config || defaultConfig());
+    setSessionNotesDraft(sessionNotes);
     setEditingSettings(false);
   };
 
@@ -574,9 +594,22 @@ const HostLobby: React.FC = () => {
     await updateDoc(gameRef, { status: "ended" });
   };
 
+  const handleEndSessionById = async (id: string) => {
+    if (!id) return;
+    const confirmed = window.confirm(
+      `End session ${id}? Students will no longer be able to join or play.`
+    );
+    if (!confirmed) return;
+    const gameRef = doc(db, "games", id);
+    await updateDoc(gameRef, { status: "ended" });
+  };
+
   const handleNewSession = async () => {
     resetSessionState();
     localStorage.removeItem(HOST_GAME_CODE_KEY);
+    setSessionNotes("");
+    setSessionNotesDraft("");
+    setConfigDraft(defaultConfig());
     await createNewGame();
   };
 
@@ -699,13 +732,26 @@ const HostLobby: React.FC = () => {
                     {s.config.backlogCost.toFixed(2)}
                   </span>
                 )}
+                {s.notes && (
+                  <span style={{ fontSize: "0.8rem", color: "#444" }}>
+                    Notes: {s.notes}
+                  </span>
+                )}
               </div>
-              <button
-                onClick={() => handleSelectSession(s.id)}
-                disabled={gameCode === s.id}
-              >
-                {gameCode === s.id ? "Managing" : "Join as host"}
-              </button>
+              <div style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
+                <button
+                  onClick={() => handleSelectSession(s.id)}
+                  disabled={gameCode === s.id}
+                >
+                  {gameCode === s.id ? "Managing" : "Join as host"}
+                </button>
+                <button
+                  onClick={() => handleEndSessionById(s.id)}
+                  style={{ fontSize: "0.85rem", background: "#ffe8e5", borderColor: "#f3b4ad" }}
+                >
+                  End session
+                </button>
+              </div>
             </li>
           ))}
         </ul>
@@ -756,6 +802,11 @@ const HostLobby: React.FC = () => {
           {config.inventoryCost.toFixed(2)}, backlog cost $
           {config.backlogCost.toFixed(2)}
         </div>
+        {sessionNotes && (
+          <div style={{ marginTop: "0.25rem" }}>
+            <strong>Notes:</strong> {sessionNotes}
+          </div>
+        )}
         <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem" }}>
           {gameStatus === "lobby" && (
             <button onClick={handleStartGame} disabled={players.length === 0}>
@@ -764,9 +815,6 @@ const HostLobby: React.FC = () => {
           )}
           {gameStatus !== "ended" && (
             <button onClick={handleEndSession}>End session</button>
-          )}
-          {gameStatus === "ended" && (
-            <button onClick={handleNewSession}>New session</button>
           )}
         </div>
       </div>
@@ -863,6 +911,19 @@ const HostLobby: React.FC = () => {
                 }
               />
               <span>Extra Order Delay (2-week information delay)</span>
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, gridColumn: "1 / -1" }}>
+              <span style={{ fontSize: "0.85rem", color: "#444" }}>
+                Session notes (visible to hosts)
+              </span>
+              <textarea
+                rows={3}
+                value={sessionNotesDraft}
+                disabled={!editingSettings}
+                onChange={(e) => setSessionNotesDraft(e.target.value)}
+                style={{ resize: "vertical" }}
+                placeholder="Add context for this session (class, cohort, etc.)"
+              />
             </label>
           </div>
           <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem" }}>
