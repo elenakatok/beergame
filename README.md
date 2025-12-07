@@ -9,18 +9,31 @@ We ran the game with two classes of 50 students at Koc University in Istanbul. I
 The most recent version includes the following changes:
 
 * The game now automatically shows the ending screen for players who have finished all rounds of the game
-* If players enter a negative order, the order is replace with 0
+* If players enter a negative order, the order is replaced with 0
 * If players enter an order above 50, they get a warning pop-up and are allowed to revise their order. Sometimes, players accidentally double-tap a key.
 * The ending graphs of orders have a standardized y-scale that maxes out at 25
 * The host can replace players with robo-players in the host screen; this is necessary when students sign in twice (creating a ghost in the system), or when students leave early.
 * Players who join late (after a session starts) can still join by replacing robo players
 * The host can tweak some game parameters in the upfront screen
 * The host can download a list of players after the session is complete
-* Added some AI generated graphics to the sign up and waiting screens
+* Added some AI-generated graphics to the sign-up and waiting screens
+* Improved session hosting and control
+* Added two optional features for beer game sessions: (1) an extra delay for orders (currently, orders placed in week t arrive upstream at t+1; with the extra delay, they arrive at t+2) and (2) backlog visibility (downstream partners can see the orders that are backlogged upstream). The host needs to activate these options during setup.
 
 ## Hosting
 
-I host this version of the game [here](https://go.wisc.edu/394776). Hosting is free to a certain point - about 200 people can play the beer game a day, and I won't be charged. But I will incur some small costs if usage goes beyond. I will pay for these costs on my own, but if you become a heavy user in your classes, I would appreciate a cost share. Message me at esiemsen@wisc.edu if you are using the product a lot. If costs become too high, I may turn off the app. I added a guide of how to setup hosting yourself, for free, [here](https://github.com/siemsene/beergame/blob/main/Howtohost.md).
+I host this version of the game [here](https://go.wisc.edu/394776). I added a guide on how to set up hosting yourself, for free, [here](https://github.com/siemsene/beergame/blob/main/Howtohost.md).
+
+The hosted game runs on cloud services (Firebase). These services are free only up to certain daily usage limits. Above those limits, I incur out-of-pocket costs.
+
+- The hosted game is **free to use** for typical classroom and workshop sizes.
+- As a rough guideline, up to about **200 players per day in total across all hosts** fits comfortably within the free tier.
+- Above that level, I may incur additional costs for database reads/writes, bandwidth, and related hosting resources.
+
+I reserve the right to:
+
+- Limit or throttle access (for example, limiting new games if daily usage is very high), and/or
+- Ask heavy users to share in the actual hosting costs their sessions generate.
 
 ## Other Beer Games
 
@@ -32,9 +45,9 @@ This version of the beer game is open source and has a [Creative Commons license
 
 ## How to Start a Session
 
-I am currently hosting a version of this code [here](https://the-beer-game-37777398-4d5fb.web.app/). You can use it for teaching if you like. The backend is Firebase. I am using a 'no-cost' Spark plan that caps at 20K writes and 50K reads per day. This should be enough for classroom use, but if you want to make sure, set up your own [Firebase](https://console.firebase.google.com/) account. The product is easy to use and works incredibly well. Thanks, Google!
+I am currently hosting a version of this code [here](https://the-beer-game-37777398-4d5fb.web.app/). You can use it for teaching if you like.
 
-To host a game, you first need to log in as a host; it will ask you for a password, which is 'Sesame'. I know - not very secure, but enough for now. You can then create a new session with a Game ID. You can share this ID with students, who can then log in with this game ID and a Name. This can be any name - but they should remember it, since if they get disconnected from the game, they can always reconnect with the Game ID and their name as long as the session is still running.
+To host a game, you first need to log in as a host; it will ask you for a password, which is 'Sesame'. I know - not very secure, but enough for now. You can then create a new session with a Game ID. You can share this ID with students, who can then log in with this game ID and a Name. This can be any name, but they should remember it, since if they get disconnected from the game, they can always reconnect using the Game ID and their name as long as the session is still running.
 
 You can test this out yourself with multiple browser tabs.
 
