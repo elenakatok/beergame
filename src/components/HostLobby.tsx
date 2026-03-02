@@ -1,26 +1,25 @@
-// src/components/HostLobby.tsx
-import React, { useEffect, useState } from "react";
-import { db } from "../firebase";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
-  deleteDoc,
   doc,
   getDocs,
   onSnapshot,
   orderBy,
   query,
-  serverTimestamp,
-  setDoc,
+  runTransaction,
   updateDoc,
-  writeBatch,
   where,
+  writeBatch,
+  deleteField,
 } from "firebase/firestore";
+import { db } from "../firebase";
+import { createSession, deleteSession } from "../api";
 import {
   defaultConfig,
   GameConfig,
   Role,
-  TeamState,
   ROLES,
+  TeamState,
   createInitialTeamState,
 } from "../logic/gameModel";
 import { computeOrdersForWeek } from "../logic/robotOrders";
@@ -28,1359 +27,862 @@ import { simulateWeek } from "../logic/gameEngine";
 import { BEER_TEAM_NAMES } from "../logic/teamNames";
 
 const HOST_GAME_CODE_KEY = "beerGame_host_gameCode";
-const HOST_SECRET_KEY = "beerGame_host_hostSecret";
+const ONLINE_THRESHOLD_MS = 30_000;
+
+interface Props {
+  userUid: string;
+  instructorEmail: string;
+  isAdmin: boolean;
+}
 
 interface LobbyPlayer {
   id: string;
   name: string;
+  normalizedName: string;
+  lastHeartbeatAtMs: number | null;
 }
 
-interface ActiveSession {
+interface SessionLite {
   id: string;
-  status: "lobby" | "in_progress";
-  createdAt?: any;
-  config?: GameConfig;
-  notes?: string;
+  status: "lobby" | "in_progress" | "ended";
+  createdAtMs: number;
+  ownerInstructorEmail?: string;
 }
 
-const HostLobby: React.FC = () => {
-  const [hostSecret, setHostSecret] = useState("");
-  const [hostAuthed, setHostAuthed] = useState(false);
+type SessionStatusFilter = "all" | SessionLite["status"];
+type FeedbackTone = "success" | "error";
+
+const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
   const [gameCode, setGameCode] = useState<string | null>(null);
-  const [gameStatus, setGameStatus] = useState<
-    "lobby" | "in_progress" | "ended" | null
-  >(null);
+  const [gameStatus, setGameStatus] = useState<"lobby" | "in_progress" | "ended" | null>(null);
   const [config, setConfig] = useState<GameConfig | null>(null);
-  const [configDraft, setConfigDraft] = useState<GameConfig>(defaultConfig());
-  const [editingSettings, setEditingSettings] = useState(false);
+  const [configDraft, setConfigDraft] = useState(defaultConfig());
+  const [savedNotes, setSavedNotes] = useState("");
   const [players, setPlayers] = useState<LobbyPlayer[]>([]);
   const [teams, setTeams] = useState<TeamState[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
-  const advancingTeamsRef = React.useRef<Set<string>>(new Set());
-  const [sessionNotes, setSessionNotes] = useState("");
-  const [sessionNotesDraft, setSessionNotesDraft] = useState("");
+  const [sessions, setSessions] = useState<SessionLite[]>([]);
+  const [notes, setNotes] = useState("");
+  const [feedback, setFeedback] = useState<{ tone: FeedbackTone; message: string } | null>(null);
+  const [sessionSearch, setSessionSearch] = useState("");
+  const [sessionFilter, setSessionFilter] = useState<SessionStatusFilter>("all");
+  const [kickingRoleKey, setKickingRoleKey] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(Date.now());
+  const advancingTeamsRef = useRef<Set<string>>(new Set());
 
-  const [activeSessions, setActiveSessions] = useState<ActiveSession[]>([]);
-  const [sessionsLoading, setSessionsLoading] = useState(false);
-  const [sessionsError, setSessionsError] = useState<string | null>(null);
-
-  // Reattach host session (only when user is on Host view)
   useEffect(() => {
-    const storedSecret = localStorage.getItem(HOST_SECRET_KEY);
-    const storedCode = localStorage.getItem(HOST_GAME_CODE_KEY);
-    if (storedSecret === "Sesame" && storedCode) {
-      setHostAuthed(true);
-      setGameCode(storedCode);
-    }
+    const stored = localStorage.getItem(HOST_GAME_CODE_KEY);
+    if (stored) setGameCode(stored);
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
   }, []);
 
-  // List all active sessions so multiple hosts can pick one or start new
   useEffect(() => {
-    if (!hostAuthed) return;
-    setSessionsLoading(true);
     const gamesRef = collection(db, "games");
-    const q = query(gamesRef, where("status", "in", ["lobby", "in_progress"]));
-    const unsub = onSnapshot(
+    const q = isAdmin
+      ? query(gamesRef, orderBy("createdAt", "desc"))
+      : query(gamesRef, where("ownerInstructorId", "==", userUid), orderBy("createdAt", "desc"));
+    return onSnapshot(
       q,
       (snap) => {
-        const sessions = snap.docs
-          .map((d) => {
-            const data = d.data() as any;
+        setSessions(
+          snap.docs.map((d) => {
+            const data = d.data() as Record<string, unknown>;
             return {
               id: d.id,
-              status: data.status as "lobby" | "in_progress",
-              createdAt: data.createdAt,
-              config: data.config as GameConfig,
-              notes:
-                typeof data.notes === "string" ? data.notes : "",
+              status: toSessionStatus(data.status),
+              createdAtMs: toMillis(data.createdAt) ?? 0,
+              ownerInstructorEmail:
+                typeof data.ownerInstructorEmail === "string"
+                  ? data.ownerInstructorEmail
+                  : undefined,
             };
           })
-          .sort(
-            (a, b) =>
-              (b.createdAt?.toMillis?.() ?? 0) -
-              (a.createdAt?.toMillis?.() ?? 0)
-          );
-        setActiveSessions(sessions);
-        setSessionsError(null);
-        setSessionsLoading(false);
+        );
       },
       (err) => {
-        console.error("Error loading sessions", err);
-        setSessionsError("Failed to load active sessions.");
-        setSessionsLoading(false);
+        console.error(err);
+        setFeedback({ tone: "error", message: "Failed to load sessions." });
       }
     );
-    return unsub;
-  }, [hostAuthed]);
+  }, [isAdmin, userUid]);
 
-  // Subscribe to game doc
   useEffect(() => {
-    if (!gameCode) return;
-    const gameRef = doc(db, "games", gameCode);
-    const unsub = onSnapshot(
-      gameRef,
-      (snap) => {
-        if (!snap.exists()) {
-          // Game was deleted, clear stored code and ask to create new session
-          setError("Game not found. Creating a new session...");
-          setGameStatus(null);
-          setConfig(null);
-          localStorage.removeItem(HOST_GAME_CODE_KEY);
-          setGameCode(null);
-          return;
-        }
-        const data = snap.data() as any;
-        setGameStatus(data.status);
-        const cfg = data.config as GameConfig;
-        setConfig(cfg);
-        if (cfg) {
-          setConfigDraft(cfg);
-        }
-        const notes = typeof data.notes === "string" ? data.notes : "";
-        setSessionNotes(notes);
-        setSessionNotesDraft(notes);
-      },
-      (err) => {
-        console.error("Error subscribing to game:", err);
-        setError("Error loading game.");
+    if (!gameCode) {
+      setGameStatus(null);
+      setConfig(null);
+      return;
+    }
+    return onSnapshot(doc(db, "games", gameCode), (snap) => {
+      if (!snap.exists()) {
+        setGameCode(null);
+        localStorage.removeItem(HOST_GAME_CODE_KEY);
+        return;
       }
-    );
-    return unsub;
+      const data = snap.data() as Record<string, unknown>;
+      setGameStatus(toSessionStatus(data.status));
+      const nextCfg = isGameConfig(data.config) ? data.config : defaultConfig();
+      setConfig(nextCfg);
+      setConfigDraft(nextCfg);
+      const nextNotes = typeof data.notes === "string" ? data.notes : "";
+      setNotes(nextNotes);
+      setSavedNotes(nextNotes);
+    });
   }, [gameCode]);
 
-  // Lobby players
   useEffect(() => {
     if (!gameCode || gameStatus !== "lobby") {
       setPlayers([]);
       return;
     }
-    const playersRef = collection(db, "games", gameCode, "players");
-    const q = query(playersRef, orderBy("createdAt", "asc"));
-    const unsub = onSnapshot(q, (snap) => {
-      const arr: LobbyPlayer[] = snap.docs.map((d) => {
-        const data = d.data() as any;
-        return {
-          id: d.id,
-          name: data.name,
-        };
-      });
-      setPlayers(arr);
+    const q = query(collection(db, "games", gameCode, "players"), orderBy("createdAt", "asc"));
+    return onSnapshot(q, (snap) => {
+      setPlayers(
+        snap.docs.map((d) => {
+          const data = d.data() as Record<string, unknown>;
+          return {
+            id: d.id,
+            name: typeof data.name === "string" ? data.name : "",
+            normalizedName: typeof data.normalizedName === "string" ? data.normalizedName : "",
+            lastHeartbeatAtMs: toMillis(data.lastHeartbeatAt),
+          };
+        })
+      );
     });
-    return unsub;
   }, [gameCode, gameStatus]);
 
-  // Teams during / after game
   useEffect(() => {
     if (!gameCode || !config || gameStatus === "lobby" || !gameStatus) {
       setTeams([]);
       return;
     }
-    const teamsRef = collection(db, "games", gameCode, "teams");
-    const unsub = onSnapshot(teamsRef, (snap) => {
-      const arr: TeamState[] = snap.docs.map((d) => {
-        const data = d.data() as any;
-        const totalCost =
-          typeof data.totalCost === "number" ? data.totalCost : 0;
-        const humanCount =
-          typeof data.humanCount === "number" ? data.humanCount : 0;
-
-        return {
-          ...(data as TeamState),
-          id: data.id ?? d.id,
-          totalCost,
-          humanCount,
-        };
-      });
-      setTeams(arr);
+    return onSnapshot(collection(db, "games", gameCode, "teams"), (snap) => {
+      setTeams(
+        snap.docs.map((d) => ({
+          ...(d.data() as TeamState),
+          id: d.id,
+        }))
+      );
     });
-    return unsub;
-  }, [gameCode, config, gameStatus]);
+  }, [gameCode, gameStatus, config]);
 
-  // Auto-advance teams once all human orders submitted
   useEffect(() => {
     if (!gameCode || !config || gameStatus !== "in_progress") return;
-    if (!teams || teams.length === 0) return;
-
-    const advance = async () => {
+    const run = async () => {
       for (const team of teams) {
-        if (!team) continue;
         if (team.currentWeek > config.nWeeks) continue;
-
-        const rolesToWaitFor = ROLES.filter(
-          (r) => !team.stages[r].isRobot
-        );
-        const allSubmitted =
-          rolesToWaitFor.length === 0 ||
-          rolesToWaitFor.every(
-            (r) => team.ordersSubmitted && team.ordersSubmitted[r]
-          );
-        if (!allSubmitted) continue;
-
-        // If we are already advancing this team, skip to prevent re-entry
-        if (advancingTeamsRef.current.has(team.id)) continue;
-
-        const teamRef = doc(db, "games", gameCode, "teams", team.id);
-        const partialOrders = (team.pendingOrders || {}) as any;
-
+        const waitFor = ROLES.filter((r) => !team.stages[r].isRobot);
+        const allSubmitted = waitFor.length === 0 || waitFor.every((r) => team.ordersSubmitted?.[r]);
+        if (!allSubmitted || advancingTeamsRef.current.has(team.id)) continue;
         try {
-          // Regenerate demand array to ensure it's not stale and matches nWeeks.
-          // This is the key fix for the retailer demand bug.
-          const liveConfig = {
-            ...config,
-            customerDemand: Array.from({ length: config.nWeeks }, (_, i) =>
-              i < 4 ? 4 : 8
-            ),
-          };
-
-          const orders = computeOrdersForWeek(
-            team,
-            liveConfig,
-            partialOrders
-          );
-
-          // Lock this team to prevent re-simulation
           advancingTeamsRef.current.add(team.id);
-
-          const { nextTeam } = simulateWeek(team, liveConfig, orders);
+          const liveCfg = {
+            ...config,
+            customerDemand: Array.from({ length: config.nWeeks }, (_, i) => (i < 4 ? 4 : 8)),
+          };
+          const orders = computeOrdersForWeek(team, liveCfg, team.pendingOrders || {});
+          const { nextTeam } = simulateWeek(team, liveCfg, orders);
           nextTeam.pendingOrders = {};
           nextTeam.ordersSubmitted = {};
-          await setDoc(teamRef, nextTeam);
-        } catch (err) {
-          console.error("Failed to advance team", team.id, err);
+          await updateDoc(
+            doc(db, "games", gameCode, "teams", team.id),
+            nextTeam as unknown as Record<string, unknown>
+          );
         } finally {
-          // Always unlock the team after the attempt
           advancingTeamsRef.current.delete(team.id);
         }
       }
     };
-
-    advance();
+    void run();
   }, [gameCode, config, gameStatus, teams]);
-
-  const handleHostLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    if (hostSecret !== "Sesame") {
-      setError("Incorrect host password.");
-      return;
-    }
-    localStorage.setItem(HOST_SECRET_KEY, hostSecret);
-    setHostAuthed(true);
-
-    const storedCode = localStorage.getItem(HOST_GAME_CODE_KEY);
-    if (storedCode) {
-      setGameCode(storedCode);
-    }
-  };
-
-  const resetSessionState = () => {
-    setGameStatus(null);
-    setConfig(null);
-    setPlayers([]);
-    setTeams([]);
-    setConfigDraft(defaultConfig());
-    setSessionNotes("");
-    setSessionNotesDraft("");
-  };
-
-  const createNewGame = async () => {
-    try {
-      setCreating(true);
-      setError(null);
-      console.log("Creating new game session...");
-      const code = generateGameCode(4);
-      const gameRef = doc(db, "games", code);
-      const cfg = sanitizeConfig(defaultConfig());
-      const notes = "";
-      await setDoc(gameRef, {
-        status: "lobby",
-        createdAt: serverTimestamp(),
-        config: cfg,
-        notes,
-      });
-      localStorage.setItem(HOST_GAME_CODE_KEY, code);
-      setGameCode(code);
-      setConfig(cfg);
-      setConfigDraft(cfg);
-      setSessionNotes(notes);
-      setSessionNotesDraft(notes);
-    } catch (err) {
-      console.error("Failed to create a new game", err);
-      const msg =
-        err instanceof Error && err.message
-          ? err.message
-          : "Failed to create a new game.";
-      setError(msg);
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const handleSelectSession = (code: string) => {
-    resetSessionState();
-    setError(null);
-    localStorage.setItem(HOST_GAME_CODE_KEY, code);
-    setGameCode(code);
-  };
-
-  const handleRemovePlayer = async (playerId: string) => {
-    if (!gameCode) return;
-    const ref = doc(db, "games", gameCode, "players", playerId);
-    await deleteDoc(ref);
-  };
 
   const sanitizeConfig = (cfg: GameConfig): GameConfig => {
     const nWeeks = Math.max(1, Math.round(cfg.nWeeks));
-    const inventoryCost = Math.max(0, Number(cfg.inventoryCost) || 0);
-    const backlogCost = Math.max(0, Number(cfg.backlogCost) || 0);
     return {
       ...cfg,
       nWeeks,
-      inventoryCost,
-      backlogCost,
-      customerDemand: cfg.customerDemand,
-      extraOrderDelay: !!cfg.extraOrderDelay,
-      displayUpstreamBackorders: !!cfg.displayUpstreamBackorders,
+      inventoryCost: Math.max(0, Number(cfg.inventoryCost) || 0),
+      backlogCost: Math.max(0, Number(cfg.backlogCost) || 0),
+      customerDemand: Array.from({ length: nWeeks }, (_, i) => (i < 4 ? 4 : 8)),
+      extraOrderDelay: Boolean(cfg.extraOrderDelay),
+      displayUpstreamBackorders: Boolean(cfg.displayUpstreamBackorders),
     };
   };
 
-  const handleSaveConfig = async () => {
-    if (!gameCode) return;
-    const nextCfg = sanitizeConfig(configDraft);
-    const gameRef = doc(db, "games", gameCode);
-    await updateDoc(gameRef, {
-      config: nextCfg,
-      notes: sessionNotesDraft || "",
-    });
-    setConfig(nextCfg);
-    setConfigDraft(nextCfg);
-    setSessionNotes(sessionNotesDraft || "");
-    setEditingSettings(false);
-  };
-
-  const handleSaveNotes = async () => {
-    if (!gameCode) return;
-    const gameRef = doc(db, "games", gameCode);
-    const notes = sessionNotesDraft || "";
-    await updateDoc(gameRef, { notes });
-    setSessionNotes(notes);
-  };
-
-  const handleBeginEdit = () => {
-    setConfigDraft(config || defaultConfig());
-    setSessionNotesDraft(sessionNotes);
-    setEditingSettings(true);
-  };
-
-  const handleCancelEdit = () => {
-    setConfigDraft(config || defaultConfig());
-    setSessionNotesDraft(sessionNotes);
-    setEditingSettings(false);
-  };
-
-  const handleDownloadPlayers = async () => {
-    if (!gameCode) return;
+  const startNew = async () => {
     try {
-      const playersRef = collection(db, "games", gameCode, "players");
-      const snap = await getDocs(playersRef);
-      if (snap.empty) {
-        alert("No players found for this session.");
-        return;
-      }
-
-      const rows: string[][] = [
-        ["name", "teamId", "teamName", "role", "isRobot"],
-      ];
-
-      snap.forEach((d) => {
-        const data = d.data() as any;
-        rows.push([
-          data.name ?? "",
-          data.teamId ?? "",
-          data.teamName ?? "",
-          data.role ?? "",
-          String(data.isRobot ?? false),
-        ]);
-      });
-
-      const escape = (val: string) => {
-        const s = `${val ?? ""}`;
-        if (s.includes('"') || s.includes(",") || s.includes("\n")) {
-          return `"${s.replace(/"/g, '""')}"`;
-        }
-        return s;
-      };
-
-      const csv = rows.map((r) => r.map(escape).join(",")).join("\n");
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `beer-game-players-${gameCode}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      const created = await createSession({ notes: "", config: sanitizeConfig(defaultConfig()) });
+      setGameCode(created.gameCode);
+      localStorage.setItem(HOST_GAME_CODE_KEY, created.gameCode);
+      setFeedback({ tone: "success", message: `Session ${created.gameCode} created.` });
     } catch (err) {
-      console.error("Failed to export players", err);
-      alert("Failed to export player list.");
+      console.error(err);
+      setFeedback({ tone: "error", message: "Failed to create session." });
     }
   };
 
-  const handleKickToRobot = async (teamId: string, role: Role) => {
+  const selectSession = (code: string) => {
+    setGameCode(code);
+    localStorage.setItem(HOST_GAME_CODE_KEY, code);
+    setFeedback({ tone: "success", message: `Managing session ${code}.` });
+  };
+
+  const removePlayer = async (p: LobbyPlayer) => {
     if (!gameCode) return;
-    const team = teams.find((t) => t.id === teamId);
-    if (!team) return;
-    const stage = team.stages[role];
-    if (!stage || stage.isRobot) return;
-
-    const playerLabel = stage.playerName || "this player";
-    const confirmed = window.confirm(
-      `Remove ${playerLabel} from ${team.name} (${role}) and replace with a robot?`
-    );
-    if (!confirmed) return;
-
-    const teamRef = doc(db, "games", gameCode, "teams", teamId);
-    const updates: Record<string, any> = {
-      [`stages.${role}.playerId`]: null,
-      [`stages.${role}.playerName`]: "Beer GPT",
-      [`stages.${role}.isRobot`]: true,
-      humanCount: Math.max(0, (team.humanCount ?? 0) - 1),
-    };
-
-    await updateDoc(teamRef, updates);
-
-    if (stage.playerId) {
-      const playerRef = doc(
-        db,
-        "games",
-        gameCode,
-        "players",
-        stage.playerId
-      );
-      await deleteDoc(playerRef);
-    }
-  };
-
-  const handleStartGame = async () => {
-    if (!gameCode || !config) return;
-    if (players.length === 0) {
-      alert("At least one player is required to start the game.");
+    if (!window.confirm(`Remove ${p.name || "this player"} from session ${gameCode}?`)) {
       return;
     }
-
     try {
-      await handleSaveConfig();
-      const gameRef = doc(db, "games", gameCode);
-      const playersRef = collection(gameRef, "players");
-      const snap = await getDocs(playersRef);
-      const allPlayers = snap.docs.map((d) => ({
-        id: d.id,
-        ...(d.data() as any),
-      }));
-
-      if (allPlayers.length === 0) {
-        alert("No players found.");
-        return;
-      }
-
-      // Shuffle all humans
-      const shuffled = [...allPlayers].sort(
-        () => Math.random() - 0.5
-      );
-
-      const numTeams = Math.ceil(shuffled.length / 4);
-
-      // Distribute humans as evenly as possible across teams
-      const baseHumansPerTeam = Math.floor(shuffled.length / numTeams);
-      const remainderHumans = shuffled.length % numTeams;
-
-      const roles: Role[] = [
-        "retailer",
-        "wholesaler",
-        "distributor",
-        "factory",
-      ];
-
-      // Prefer robots in earlier stages to match your example
-      // (with 6 players -> 2 teams, robot retailer on each team).
-      const ROBOT_ROLE_PRIORITY: Role[] = [
-        "retailer",
-        "wholesaler",
-        "distributor",
-        "factory",
-      ];
-
       const batch = writeBatch(db);
-      const usedNames = new Set<string>();
-      let playerIndex = 0;
+      batch.delete(doc(db, "games", gameCode, "players", p.id));
+      if (p.normalizedName) batch.delete(doc(db, "games", gameCode, "playerNames", p.normalizedName));
+      await batch.commit();
+      setFeedback({ tone: "success", message: "Player removed from lobby." });
+    } catch (err) {
+      console.error(err);
+      setFeedback({ tone: "error", message: "Unable to remove player." });
+    }
+  };
 
-      for (let i = 0; i < numTeams; i++) {
+  const saveConfig = async () => {
+    if (!gameCode) return;
+    try {
+      const clean = sanitizeConfig(configDraft);
+      await updateDoc(doc(db, "games", gameCode), { config: clean, notes });
+      setConfig(clean);
+      setSavedNotes(notes);
+      setFeedback({ tone: "success", message: "Session settings saved." });
+    } catch (err) {
+      console.error(err);
+      setFeedback({ tone: "error", message: "Unable to save session settings." });
+    }
+  };
+
+  const startGame = async () => {
+    if (!gameCode || !config || players.length === 0) return;
+    try {
+      await saveConfig();
+      const gameRef = doc(db, "games", gameCode);
+      const snap = await getDocs(collection(gameRef, "players"));
+      const allPlayers = snap.docs.map((d) => {
+        const data = d.data() as Record<string, unknown>;
+        return {
+          id: d.id,
+          name: typeof data.name === "string" ? data.name : "Player",
+        };
+      });
+      if (allPlayers.length === 0) return;
+
+      const shuffled = [...allPlayers].sort(() => Math.random() - 0.5);
+      const numTeams = Math.ceil(shuffled.length / 4);
+      const baseHumans = Math.floor(shuffled.length / numTeams);
+      const rem = shuffled.length % numTeams;
+      const batch = writeBatch(db);
+      const used = new Set<string>();
+      let playerIdx = 0;
+
+      for (let i = 0; i < numTeams; i += 1) {
         const teamId = `team${i + 1}`;
-        const teamName = pickTeamName(i, usedNames);
-        let team = createInitialTeamState(teamId, teamName);
+        const teamName = pickTeamName(i, used);
+        const team = createInitialTeamState(teamId, teamName);
+        const humans = baseHumans + (i < rem ? 1 : 0);
+        const robots = Math.max(0, ROLES.length - humans);
+        const teamPlayers = shuffled.slice(playerIdx, playerIdx + humans);
+        playerIdx += humans;
+        const robotRoles = ROLES.slice(0, robots);
+        const humanRoles = ROLES.filter((r) => !robotRoles.includes(r));
 
-        // How many humans and robots on this team?
-        const humansThisTeam =
-          baseHumansPerTeam + (i < remainderHumans ? 1 : 0);
-        const robotsThisTeam = Math.max(0, roles.length - humansThisTeam);
-
-        const teamPlayers = shuffled.slice(
-          playerIndex,
-          playerIndex + humansThisTeam
-        );
-        playerIndex += humansThisTeam;
-
-        let robotRoles: Role[] = [];
-        let humanRoles: Role[] = [];
-
-        if (robotsThisTeam === 0) {
-          // All roles are human
-          humanRoles = [...roles];
-        } else {
-          // Assign robots to preferred roles first (e.g., retailer)
-          robotRoles = ROBOT_ROLE_PRIORITY.slice(0, robotsThisTeam);
-          humanRoles = roles.filter((r) => !robotRoles.includes(r));
-        }
-
-        // Randomly assign humans to remaining roles
-        const shuffledHumans = [...teamPlayers].sort(
-          () => Math.random() - 0.5
-        );
-
-        shuffledHumans.forEach((player, idx) => {
+        [...teamPlayers].sort(() => Math.random() - 0.5).forEach((player, idx) => {
           const role = humanRoles[idx];
           if (!role) return;
-
           team.stages[role].playerId = player.id;
           team.stages[role].playerName = player.name;
           team.stages[role].isRobot = false;
           team.humanCount += 1;
-
-          const playerRef = doc(
-            db,
-            "games",
-            gameCode,
-            "players",
-            player.id
-          );
-          batch.update(playerRef, {
+          batch.update(doc(db, "games", gameCode, "players", player.id), {
             teamId,
+            teamName,
             role,
             isRobot: false,
-            teamName,
           });
         });
 
-        // Fill remaining roles with robots
         robotRoles.forEach((role) => {
           team.stages[role].playerId = null;
           team.stages[role].playerName = "Beer GPT";
           team.stages[role].isRobot = true;
         });
 
-        const teamRef = doc(
-          db,
-          "games",
-          gameCode,
-          "teams",
-          teamId
-        );
-        batch.set(teamRef, team);
+        batch.set(doc(db, "games", gameCode, "teams", teamId), team);
       }
 
       batch.update(gameRef, { status: "in_progress" });
       await batch.commit();
+      setFeedback({ tone: "success", message: "Game started successfully." });
     } catch (err) {
       console.error(err);
-      setError("Failed to start game.");
+      setFeedback({ tone: "error", message: "Unable to start game." });
     }
   };
 
-  const handleEndSession = async () => {
+  const endSession = async () => {
     if (!gameCode) return;
-    const gameRef = doc(db, "games", gameCode);
-    await updateDoc(gameRef, { status: "ended" });
-  };
-
-  const handleEndSessionById = async (id: string) => {
-    if (!id) return;
-    const confirmed = window.confirm(
-      `End session ${id}? Students will no longer be able to join or play.`
-    );
-    if (!confirmed) return;
-    const gameRef = doc(db, "games", id);
-    await updateDoc(gameRef, { status: "ended" });
-  };
-
-  const handleNewSession = async () => {
-    resetSessionState();
-    localStorage.removeItem(HOST_GAME_CODE_KEY);
-    setSessionNotes("");
-    setSessionNotesDraft("");
-    setConfigDraft(defaultConfig());
-    await createNewGame();
-  };
-
-  const handleClearSelection = () => {
-    resetSessionState();
-    localStorage.removeItem(HOST_GAME_CODE_KEY);
-    setGameCode(null);
-  };
-
-  const formatCreatedAt = (val: any) => {
-    if (!val || typeof val.toDate !== "function") return "Created recently";
     try {
-      return `Created ${val.toDate().toLocaleString()}`;
-    } catch {
-      return "Created recently";
+      await updateDoc(doc(db, "games", gameCode), { status: "ended" });
+      setFeedback({ tone: "success", message: `Session ${gameCode} marked as ended.` });
+    } catch (err) {
+      console.error(err);
+      setFeedback({ tone: "error", message: "Unable to end session." });
     }
   };
 
-  if (!hostAuthed) {
-    return (
-      <div style={{ maxWidth: 480 }}>
-        <h2>Host Login</h2>
-        <p>Enter the instructor password to access the host view.</p>
-        <form
-          onSubmit={handleHostLogin}
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "0.5rem",
-            marginTop: "0.5rem",
-          }}
-        >
-          <input
-            type="password"
-            value={hostSecret}
-            onChange={(e) => setHostSecret(e.target.value)}
-            placeholder="Host password"
-          />
-          <button type="submit" disabled={creating}>
-            {creating ? "Creating game..." : "Enter Host View"}
-          </button>
-          {error && (
-            <div style={{ color: "red", fontSize: "0.9rem" }}>{error}</div>
-          )}
-        </form>
-      </div>
-    );
-  }
+  const removeSession = async (code: string) => {
+    if (
+      !window.confirm(
+        `Delete session ${code}? This permanently removes game state, teams, and player data.`
+      )
+    ) {
+      return;
+    }
+    try {
+      await deleteSession({ gameCode: code });
+      if (code === gameCode) {
+        setGameCode(null);
+        localStorage.removeItem(HOST_GAME_CODE_KEY);
+      }
+      setFeedback({ tone: "success", message: `Session ${code} deleted.` });
+    } catch (err) {
+      console.error(err);
+      setFeedback({ tone: "error", message: `Unable to delete session ${code}.` });
+    }
+  };
 
-  const sessionPicker = (
-    <div
-      style={{
-        padding: "0.75rem 1rem",
-        borderRadius: "0.75rem",
-        border: "1px solid #ddd",
-        background: "#f6fbff",
-        display: "flex",
-        flexDirection: "column",
-        gap: "0.5rem",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          gap: "0.5rem",
-        }}
-      >
-        <h3 style={{ margin: 0 }}>Active sessions</h3>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button onClick={handleNewSession} disabled={creating}>
-            {creating ? "Starting..." : "Start a new session"}
-          </button>
-          {gameCode && (
-            <button onClick={handleClearSelection} style={{ fontSize: "0.85rem" }}>
-              Switch session
-            </button>
-          )}
-        </div>
-      </div>
-      <p style={{ margin: 0, fontSize: "0.9rem", color: "#444" }}>
-        Join an existing lobby or in-progress game as host, or spin up a new session
-        for another class.
-      </p>
-      {sessionsLoading ? (
-        <p style={{ margin: 0 }}>Loading sessions...</p>
-      ) : sessionsError ? (
-        <p style={{ margin: 0, color: "red" }}>{sessionsError}</p>
-      ) : activeSessions.length === 0 ? (
-        <p style={{ margin: 0 }}>No active sessions right now. Start a new one above.</p>
-      ) : (
-        <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-          {activeSessions.map((s) => (
-            <li
-              key={s.id}
-              style={{
-                border: "1px solid #e3e8ee",
-                borderRadius: "0.5rem",
-                padding: "0.5rem 0.75rem",
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                gap: "0.5rem",
-              }}
-            >
-              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
-                  <span style={{ fontWeight: 700, fontFamily: "monospace" }}>{s.id}</span>
-                  <span style={{ fontSize: "0.85rem", color: "#555" }}>
-                    {s.status === "lobby" ? "Lobby open" : "In progress"}
-                  </span>
-                </div>
-                <span style={{ fontSize: "0.8rem", color: "#666" }}>
-                  {formatCreatedAt(s.createdAt)}
-                </span>
-                {s.config && (
-                  <span style={{ fontSize: "0.8rem", color: "#555" }}>
-                    {s.config.nWeeks} rounds | Holding ${s.config.inventoryCost.toFixed(2)} | Backlog $
-                    {s.config.backlogCost.toFixed(2)}
-                  </span>
-                )}
-                {s.notes && (
-                  <span style={{ fontSize: "0.8rem", color: "#444" }}>
-                    Notes: {s.notes}
-                  </span>
-                )}
-              </div>
-              <div style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
-                <button
-                  onClick={() => handleSelectSession(s.id)}
-                  disabled={gameCode === s.id}
-                >
-                  {gameCode === s.id ? "Managing" : "Join as host"}
-                </button>
-                <button
-                  onClick={() => handleEndSessionById(s.id)}
-                  style={{ fontSize: "0.85rem", background: "#ffe8e5", borderColor: "#f3b4ad" }}
-                >
-                  End session
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
+  const kickToRobot = async (team: TeamState, role: Role) => {
+    if (!gameCode) return;
+    const stage = team.stages[role];
+    if (!stage || stage.isRobot) return;
 
-  if (!gameCode || !config) {
-    return (
-      <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-        <h2>Host View</h2>
-        {sessionPicker}
-        {!gameCode ? (
-          <p>Select an existing session above or start a new one to manage the game.</p>
-        ) : (
-          <p>Loading session {gameCode}...</p>
-        )}
-        {error && (
-          <div style={{ color: "red", fontSize: "0.9rem" }}>{error}</div>
-        )}
-      </div>
-    );
-  }
+    const roleLabel = role[0].toUpperCase() + role.slice(1);
+    if (
+      !window.confirm(
+        `Replace ${stage.playerName ?? "this player"} (${roleLabel}) with Beer GPT for session ${gameCode}?`
+      )
+    ) {
+      return;
+    }
+
+    const opKey = `${team.id}:${role}`;
+    setKickingRoleKey(opKey);
+    try {
+      await runTransaction(db, async (tx) => {
+        const teamRef = doc(db, "games", gameCode, "teams", team.id);
+        const teamSnap = await tx.get(teamRef);
+        if (!teamSnap.exists()) return;
+        const teamData = teamSnap.data() as Record<string, unknown>;
+        const stages = (teamData.stages ?? {}) as Partial<Record<Role, Record<string, unknown>>>;
+        const liveStage = stages[role];
+        if (!liveStage || liveStage.isRobot === true) return;
+
+        const playerId = typeof liveStage.playerId === "string" ? liveStage.playerId : null;
+        const liveHumanCount = typeof teamData.humanCount === "number" ? teamData.humanCount : team.humanCount;
+
+        tx.update(teamRef, {
+          [`stages.${role}.playerId`]: null,
+          [`stages.${role}.playerName`]: "Beer GPT",
+          [`stages.${role}.isRobot`]: true,
+          [`pendingOrders.${role}`]: deleteField(),
+          [`ordersSubmitted.${role}`]: deleteField(),
+          humanCount: Math.max(0, liveHumanCount - 1),
+        });
+
+        if (playerId) {
+          const playerRef = doc(db, "games", gameCode, "players", playerId);
+          tx.update(playerRef, {
+            teamId: null,
+            teamName: null,
+            role: null,
+            isRobot: false,
+          });
+        }
+      });
+      setFeedback({
+        tone: "success",
+        message: `${roleLabel} was switched to Beer GPT for team ${team.name}.`,
+      });
+    } catch (err) {
+      console.error(err);
+      setFeedback({
+        tone: "error",
+        message: "Unable to kick player to robot. Please try again.",
+      });
+    } finally {
+      setKickingRoleKey(null);
+    }
+  };
+
+  const filteredSessions = useMemo(() => {
+    const queryText = sessionSearch.trim().toLowerCase();
+    return sessions.filter((session) => {
+      const statusOk = sessionFilter === "all" || session.status === sessionFilter;
+      if (!statusOk) {
+        return false;
+      }
+      if (!queryText) {
+        return true;
+      }
+      return [session.id, session.ownerInstructorEmail ?? ""].join(" ").toLowerCase().includes(queryText);
+    });
+  }, [sessionFilter, sessionSearch, sessions]);
+
+  const presenceSummary = useMemo(() => {
+    const onlineCount = players.filter(
+      (player) => player.lastHeartbeatAtMs !== null && nowMs - player.lastHeartbeatAtMs <= ONLINE_THRESHOLD_MS
+    ).length;
+    return {
+      onlineCount,
+      offlineCount: Math.max(0, players.length - onlineCount),
+    };
+  }, [nowMs, players]);
+
+  const configIsDirty = useMemo(() => {
+    if (!config) {
+      return false;
+    }
+    const cleanDraft = sanitizeConfig(configDraft);
+    const cleanConfig = sanitizeConfig(config);
+    return JSON.stringify(cleanDraft) !== JSON.stringify(cleanConfig) || notes !== savedNotes;
+  }, [config, configDraft, notes, savedNotes]);
+
+  const inProgressSummary = useMemo(() => {
+    let waitingRoles = 0;
+    let submittedRoles = 0;
+    let waitingTeams = 0;
+
+    for (const team of teams) {
+      let teamWaiting = 0;
+      for (const role of ROLES) {
+        const stage = team.stages[role];
+        if (stage.isRobot) continue;
+        if (team.ordersSubmitted?.[role]) {
+          submittedRoles += 1;
+        } else {
+          waitingRoles += 1;
+          teamWaiting += 1;
+        }
+      }
+      if (teamWaiting > 0) waitingTeams += 1;
+    }
+
+    return { waitingRoles, submittedRoles, waitingTeams };
+  }, [teams]);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-      <h2>Host View</h2>
-      {sessionPicker}
-      <div
-        style={{
-          padding: "0.75rem 1rem",
-          borderRadius: "0.75rem",
-          border: "1px solid #ddd",
-          background: "#faf6e9",
-        }}
-      >
-        <div>
-          <strong>Game ID:</strong>{" "}
-          <span style={{ fontFamily: "monospace", fontSize: "1.1rem" }}>
-            {gameCode}
-          </span>
+    <div className="dashboard-stack">
+      <section className="panel">
+        <div className="section-header">
+          <div>
+            <h2>{isAdmin ? "Instructor Console (Admin)" : "Instructor Console"}</h2>
+            <p>Launch and manage Beer Game sessions for your class roster.</p>
+          </div>
+          <span className="chip chip-neutral">{instructorEmail}</span>
         </div>
-        <div>
-          <strong>Status:</strong> {gameStatus}
+
+        <div className="toolbar">
+          <div className="toolbar-field">
+            <label htmlFor="session-search">Search sessions</label>
+            <input
+              id="session-search"
+              className="input"
+              type="text"
+              value={sessionSearch}
+              onChange={(e) => setSessionSearch(e.target.value)}
+              placeholder="Session code or owner email"
+            />
+          </div>
+          <div className="toolbar-field">
+            <label htmlFor="session-filter">Status filter</label>
+            <select
+              id="session-filter"
+              className="select"
+              value={sessionFilter}
+              onChange={(e) => setSessionFilter(e.target.value as SessionStatusFilter)}
+            >
+              <option value="all">All sessions</option>
+              <option value="lobby">Lobby</option>
+              <option value="in_progress">In progress</option>
+              <option value="ended">Ended</option>
+            </select>
+          </div>
+          <div className="toolbar-field">
+            <button className="btn-primary" onClick={startNew}>
+              Create new session
+            </button>
+          </div>
         </div>
-        <div>
-          <strong>Config:</strong> {config.nWeeks} weeks, inventory cost $
-          {config.inventoryCost.toFixed(2)}, backlog cost $
-          {config.backlogCost.toFixed(2)}
-        </div>
-        {sessionNotes && (
-          <div style={{ marginTop: "0.25rem" }}>
-            <strong>Notes:</strong> {sessionNotes}
+
+        {filteredSessions.length === 0 ? (
+          <div className="empty-state" style={{ marginTop: "0.9rem" }}>
+            No sessions match your current filters.
+          </div>
+        ) : (
+          <div className="card-grid" style={{ marginTop: "0.9rem" }}>
+            {filteredSessions.map((s) => (
+              <article key={s.id} className="item-card">
+                <h4>{s.id}</h4>
+                <p className="item-card-meta">
+                  Status: <span className={`chip chip-${s.status}`}>{s.status.replace("_", " ")}</span>
+                </p>
+                <p className="item-card-meta">
+                  Created {new Date(s.createdAtMs || Date.now()).toLocaleString()}
+                </p>
+                {isAdmin && s.ownerInstructorEmail && (
+                  <p className="item-card-meta">Owner: {s.ownerInstructorEmail}</p>
+                )}
+                <div className="actions-row">
+                  <button
+                    className={gameCode === s.id ? "btn-subtle" : "btn-primary"}
+                    disabled={gameCode === s.id}
+                    onClick={() => selectSession(s.id)}
+                  >
+                    {gameCode === s.id ? "Managing" : "Manage"}
+                  </button>
+                  <button className="btn-danger" onClick={() => removeSession(s.id)}>
+                    Delete
+                  </button>
+                </div>
+              </article>
+            ))}
           </div>
         )}
-        <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem" }}>
-          {gameStatus === "lobby" && (
-            <button onClick={handleStartGame} disabled={players.length === 0}>
-              Start game
-            </button>
-          )}
-          {gameStatus !== "ended" && (
-            <button onClick={handleEndSession}>End session</button>
-          )}
-        </div>
-      </div>
+      </section>
 
-      {gameStatus === "lobby" && (
-        <div
-          style={{
-            padding: "0.75rem 1rem",
-            borderRadius: "0.75rem",
-            border: "1px solid #ddd",
-          }}
-        >
-          <h3>Lobby</h3>
-          <p>Share the Game ID above with students so they can join.</p>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-              gap: "0.75rem",
-              margin: "0.75rem 0",
-            }}
-          >
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: "0.85rem", color: "#444" }}>
-                Number of rounds
-              </span>
+      {gameCode && config && (
+        <section className="panel panel-muted">
+          <div className="section-header">
+            <div>
+              <h3>Active Session</h3>
+              <p>
+                Session <strong>{gameCode}</strong> is currently{" "}
+                <span className={`chip chip-${gameStatus ?? "neutral"}`}>{gameStatus ?? "unknown"}</span>
+              </p>
+            </div>
+          </div>
+
+          <div className="form-grid">
+            <div className="field">
+              <label htmlFor="cfg-weeks">Total weeks</label>
               <input
+                id="cfg-weeks"
+                className="input"
                 type="number"
                 min={1}
                 value={configDraft.nWeeks}
-                disabled={!editingSettings}
                 onChange={(e) =>
-                  setConfigDraft((prev) => ({
-                    ...prev,
-                    nWeeks: parseInt(e.target.value, 10) || 0,
-                  }))
+                  setConfigDraft((p) => ({ ...p, nWeeks: parseInt(e.target.value, 10) || 1 }))
                 }
               />
-            </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: "0.85rem", color: "#444" }}>
-                Holding cost (per unit)
-              </span>
+              <p className="field-help">Number of simulated weeks in this session.</p>
+            </div>
+            <div className="field">
+              <label htmlFor="cfg-inventory-cost">Inventory cost</label>
               <input
+                id="cfg-inventory-cost"
+                className="input"
                 type="number"
                 min={0}
                 step="0.1"
                 value={configDraft.inventoryCost}
-                disabled={!editingSettings}
                 onChange={(e) =>
-                  setConfigDraft((prev) => ({
-                    ...prev,
-                    inventoryCost: parseFloat(e.target.value) || 0,
-                  }))
+                  setConfigDraft((p) => ({ ...p, inventoryCost: parseFloat(e.target.value) || 0 }))
                 }
               />
-            </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: "0.85rem", color: "#444" }}>
-                Backlog cost (per unit)
-              </span>
+              <p className="field-help">Weekly cost per unit of inventory held.</p>
+            </div>
+            <div className="field">
+              <label htmlFor="cfg-backlog-cost">Backlog cost</label>
               <input
+                id="cfg-backlog-cost"
+                className="input"
                 type="number"
                 min={0}
                 step="0.1"
                 value={configDraft.backlogCost}
-                disabled={!editingSettings}
                 onChange={(e) =>
-                  setConfigDraft((prev) => ({
-                    ...prev,
-                    backlogCost: parseFloat(e.target.value) || 0,
-                  }))
+                  setConfigDraft((p) => ({ ...p, backlogCost: parseFloat(e.target.value) || 0 }))
                 }
               />
-            </label>
-            <label
-              style={{
-                display: "flex",
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 8,
-                gridColumn: "1 / -1",
-              }}
-            >
+              <p className="field-help">Weekly penalty per unit of unmet demand.</p>
+            </div>
+          </div>
+
+          <div className="checkbox-row">
+            <label className="checkbox-control" htmlFor="cfg-extra-order-delay">
               <input
+                id="cfg-extra-order-delay"
                 type="checkbox"
-                checked={configDraft.extraOrderDelay ?? false}
-                disabled={!editingSettings}
+                checked={Boolean(configDraft.extraOrderDelay)}
                 onChange={(e) =>
-                  setConfigDraft((prev) => ({
-                    ...prev,
-                    extraOrderDelay: e.target.checked,
-                  }))
+                  setConfigDraft((p) => ({ ...p, extraOrderDelay: e.target.checked }))
                 }
               />
-              <span>Extra Order Delay (2-week information delay)</span>
+              Use extra order delay
             </label>
-            <label
-              style={{
-                display: "flex",
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 8,
-                gridColumn: "1 / -1",
-              }}
-            >
+            <label className="checkbox-control" htmlFor="cfg-show-upstream-backorders">
               <input
+                id="cfg-show-upstream-backorders"
                 type="checkbox"
-                checked={configDraft.displayUpstreamBackorders ?? false}
-                disabled={!editingSettings}
+                checked={Boolean(configDraft.displayUpstreamBackorders)}
                 onChange={(e) =>
-                  setConfigDraft((prev) => ({
-                    ...prev,
+                  setConfigDraft((p) => ({
+                    ...p,
                     displayUpstreamBackorders: e.target.checked,
                   }))
                 }
               />
-              <span>Display Units on Backorder (show upstream partner backlog)</span>
+              Show upstream backorders
             </label>
           </div>
-          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem" }}>
-            {!editingSettings ? (
-              <button onClick={handleBeginEdit}>Edit settings</button>
-            ) : (
-              <>
-                <button onClick={handleSaveConfig}>Save session settings</button>
-                <button onClick={handleCancelEdit}>Cancel</button>
-              </>
+
+          <div className="field" style={{ marginTop: "0.9rem" }}>
+            <label htmlFor="cfg-notes">Session notes</label>
+            <textarea
+              id="cfg-notes"
+              className="textarea"
+              rows={3}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+            />
+            <p className="field-help">
+              Shared context for students or facilitators. Saved with session settings.
+            </p>
+          </div>
+
+          <div className="actions-row">
+            <button className="btn-primary" onClick={saveConfig} disabled={!configIsDirty}>
+              Save settings
+            </button>
+            {gameStatus === "lobby" && (
+              <button className="btn-subtle" onClick={startGame} disabled={players.length === 0}>
+                Start game
+              </button>
+            )}
+            {gameStatus !== "ended" && (
+              <button className="btn-danger" onClick={endSession}>
+                End session
+              </button>
             )}
           </div>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 6,
-              marginTop: "0.25rem",
-            }}
-          >
-            <span style={{ fontSize: "0.85rem", color: "#444" }}>
-              Session notes (visible to hosts)
-            </span>
-            <textarea
-              rows={3}
-              value={sessionNotesDraft}
-              onChange={(e) => setSessionNotesDraft(e.target.value)}
-              style={{ resize: "vertical" }}
-              placeholder="Enter the details of your session (which university, purpose, etc.) here"
-            />
-            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-              <button onClick={handleSaveNotes}>Save notes</button>
+          {!configIsDirty && (
+            <p className="field-help" style={{ marginTop: "0.6rem" }}>
+              No unsaved changes.
+            </p>
+          )}
+        </section>
+      )}
+
+      {gameCode && gameStatus === "lobby" && (
+        <section className="panel">
+          <div className="section-header">
+            <div>
+              <h3>Lobby Presence</h3>
+              <p>Track who is online before you start the game.</p>
+            </div>
+            <div className="tab-row">
+              <span className="chip chip-online">{presenceSummary.onlineCount} online</span>
+              <span className="chip chip-offline">{presenceSummary.offlineCount} offline</span>
             </div>
           </div>
+
           {players.length === 0 ? (
-            <p>No players have joined yet.</p>
+            <div className="empty-state">No players have joined this lobby yet.</div>
           ) : (
-            <ul style={{ listStyle: "none", padding: 0 }}>
-              {players.map((p) => (
-                <li
-                  key={p.id}
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    padding: "0.25rem 0",
-                  }}
-                >
-                  <span>{p.name}</span>
-                  <button
-                    onClick={() => handleRemovePlayer(p.id)}
-                    style={{ fontSize: "0.8rem" }}
-                  >
-                    Remove
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-
-      {gameStatus === "in_progress" && (
-        <div
-          style={{
-            padding: "0.75rem 1rem",
-            borderRadius: "0.75rem",
-            border: "1px solid #ddd",
-          }}
-        >
-          <h3>Teams overview</h3>
-          {teams.length === 0 ? (
-            <p>Waiting for teams to load...</p>
-          ) : (
-            <table
-              style={{
-                width: "100%",
-                borderCollapse: "collapse",
-                fontSize: "0.9rem",
-              }}
-            >
-              <thead>
-                <tr>
-                  <th style={{ textAlign: "left" }}>Team</th>
-                  <th>Week</th>
-                  <th>Total cost</th>
-                  <th>Retailer</th>
-                  <th>Wholesaler</th>
-                  <th>Distributor</th>
-                  <th>Factory</th>
-                </tr>
-              </thead>
-              <tbody>
-                {teams.map((t) => {
-                  const totalCost =
-                    typeof t.totalCost === "number" ? t.totalCost : 0;
-                  return (
-                    <tr key={t.id}>
-                      <td>{t.name}</td>
-                      <td style={{ textAlign: "center" }}>{t.currentWeek}</td>
-                      <td style={{ textAlign: "center" }}>
-                        ${totalCost.toFixed(2)}
-                      </td>
-                      {ROLES.map((r) => {
-                        const stage = t.stages[r];
-                        const isRobot = stage.isRobot;
-                        const submitted =
-                          t.ordersSubmitted && t.ordersSubmitted[r];
-                        return (
-                          <td
-                            key={r}
-                            style={{
-                              textAlign: "center",
-                              padding: "0.1rem 0.25rem",
-                            }}
-                          >
-                            <div
-                              style={{
-                                display: "flex",
-                                flexDirection: "column",
-                                alignItems: "center",
-                                gap: "0.15rem",
-                              }}
-                            >
-                              <span
-                                style={{
-                                  fontSize: "0.75rem",
-                                  opacity: isRobot ? 0.7 : 1,
-                                }}
-                              >
-                                {stage.playerName || "Beer GPT"}
-                              </span>
-                              <span>
-                                {isRobot ? "🤖" : submitted ? "✅" : "⏳"}
-                              </span>
-                              {!isRobot && (
-                                <button
-                                  onClick={() => handleKickToRobot(t.id, r)}
-                                  style={{
-                                    fontSize: "0.7rem",
-                                    padding: "0.15rem 0.4rem",
-                                    borderRadius: "0.4rem",
-                                  }}
-                                >
-                                  Kick to robot
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
-
-      {gameStatus === "ended" && (
-        <div
-          style={{
-            padding: "0.75rem 1rem",
-            borderRadius: "0.75rem",
-            border: "1px solid #ddd",
-          }}
-        >
-          <h3>Leaderboard</h3>
-          <div style={{ marginBottom: "0.5rem" }}>
-            <button onClick={handleDownloadPlayers}>Download player list (CSV)</button>
-          </div>
-          {teams.length === 0 ? (
-            <p>No teams found.</p>
-          ) : (
-            <>
-              <ol>
-                {teams
-                  .slice()
-                  .sort(
-                    (a, b) =>
-                      ((a.totalCost as number) ?? 0) -
-                      ((b.totalCost as number) ?? 0)
-                  )
-                  .map((t) => {
-                    const totalCost =
-                      typeof t.totalCost === "number" ? t.totalCost : 0;
-                    const humans =
-                      typeof t.humanCount === "number" ? t.humanCount : 0;
-
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Status</th>
+                    <th>Last seen</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {players.map((p) => {
+                    const online =
+                      p.lastHeartbeatAtMs !== null &&
+                      nowMs - p.lastHeartbeatAtMs <= ONLINE_THRESHOLD_MS;
+                    const seen =
+                      p.lastHeartbeatAtMs === null
+                        ? "No heartbeat yet"
+                        : `${Math.max(0, Math.floor((nowMs - p.lastHeartbeatAtMs) / 1000))}s ago`;
                     return (
-                      <li key={t.id}>
-                        <strong>{t.name}</strong>  -  total cost $
-                        {totalCost.toFixed(2)} (players: {humans}, robots:{" "}
-                        {4 - humans})
-                      </li>
+                      <tr key={p.id} className={online ? "" : "row-offline"}>
+                        <td>{p.name}</td>
+                        <td>
+                          <span className={`chip ${online ? "chip-online" : "chip-offline"}`}>
+                            {online ? "online" : "offline"}
+                          </span>
+                        </td>
+                        <td>{seen}</td>
+                        <td>
+                          <button className="btn-danger" onClick={() => removePlayer(p)}>
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
                     );
                   })}
-              </ol>
-
-              <h4 style={{ marginTop: "1rem" }}>Order histories</h4>
-              {teams.map((t) => (
-                <div
-                  key={t.id}
-                  style={{
-                    marginTop: "0.75rem",
-                    paddingTop: "0.5rem",
-                    borderTop: "1px solid #eee",
-                    fontSize: "0.8rem",
-                  }}
-                >
-                  <div
-                    style={{
-                      marginBottom: "0.25rem",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {t.name}
-                  </div>
-                  <TeamOrdersChart team={t} />
-                </div>
-              ))}
-            </>
+                </tbody>
+              </table>
+            </div>
           )}
-        </div>
+        </section>
       )}
 
-      {error && (
-        <div style={{ color: "red", fontSize: "0.9rem" }}>{error}</div>
-      )}
-    </div>
-  );
-};
-
-// --- Simple SVG line chart for per-team order histories ---
-
-const ROLE_COLORS: Record<Role, string> = {
-  retailer: "#d73027",
-  wholesaler: "#4575b4",
-  distributor: "#1a9850",
-  factory: "#984ea3",
-};
-
-interface TeamOrdersChartProps {
-  team: TeamState;
-}
-
-const TeamOrdersChart: React.FC<TeamOrdersChartProps> = ({ team }) => {
-  const series = ROLES.map((role) => ({
-    role,
-    label: role.charAt(0).toUpperCase() + role.slice(1),
-    values: (team.stages[role].history || []).map(
-      (h) => h.orderPlaced ?? 0
-    ),
-  }));
-
-  const maxWeeks = series.reduce(
-    (max, s) => Math.max(max, s.values.length),
-    1
-  );
-
-  // Standardized y-axis for all teams
-  const maxVal = 25;
-
-  const width = 360;
-  const height = 160;
-  const paddingLeft = 32;
-  const paddingRight = 10;
-  const paddingTop = 10;
-  const paddingBottom = 24;
-
-  const plotWidth = width - paddingLeft - paddingRight;
-  const plotHeight = height - paddingTop - paddingBottom;
-
-  const getX = (weekIndex: number) => {
-    if (maxWeeks <= 1) {
-      return paddingLeft + plotWidth / 2;
-    }
-    const t = weekIndex / (maxWeeks - 1);
-    return paddingLeft + t * plotWidth;
-  };
-
-  const getY = (value: number) => {
-    const val = Math.max(value, 0); // allow values > maxVal to go above chart
-    const t = val / maxVal;
-    return paddingTop + (1 - t) * plotHeight;
-  };
-
-  return (
-    <div>
-      <svg width={width} height={height}>
-        {/* Axes */}
-        <line
-          x1={paddingLeft}
-          y1={height - paddingBottom}
-          x2={width - paddingRight}
-          y2={height - paddingBottom}
-          stroke="#aaa"
-          strokeWidth={0.5}
-        />
-        <line
-          x1={paddingLeft}
-          y1={paddingTop}
-          x2={paddingLeft}
-          y2={height - paddingBottom}
-          stroke="#aaa"
-          strokeWidth={0.5}
-        />
-
-        {/* Y-axis labels (0 and max) */}
-        <text
-          x={paddingLeft - 6}
-          y={height - paddingBottom + 10}
-          fontSize={9}
-          textAnchor="end"
-          fill="#555"
-        >
-          0
-        </text>
-        <text
-          x={paddingLeft - 6}
-          y={paddingTop + 3}
-          fontSize={9}
-          textAnchor="end"
-          fill="#555"
-        >
-          {maxVal}
-        </text>
-
-        {/* X-axis labels: week 1 and last week */}
-        <text
-          x={getX(0)}
-          y={height - 6}
-          fontSize={9}
-          textAnchor="middle"
-          fill="#555"
-        >
-          1
-        </text>
-        <text
-          x={getX(maxWeeks - 1)}
-          y={height - 6}
-          fontSize={9}
-          textAnchor="middle"
-          fill="#555"
-        >
-          {maxWeeks}
-        </text>
-
-        {/* Lines per role */}
-        {series.map((s) => {
-          if (s.values.length === 0) return null;
-          const d = s.values
-            .map((v, idx) => {
-              const x = getX(idx);
-              const y = getY(v);
-              return `${idx === 0 ? "M" : "L"} ${x} ${y}`;
-            })
-            .join(" ");
-          return (
-            <path
-              key={s.role}
-              d={d}
-              fill="none"
-              stroke={ROLE_COLORS[s.role]}
-              strokeWidth={1.5}
-            />
-          );
-        })}
-
-        {/* Small circles on points */}
-        {series.map((s) =>
-          s.values.map((v, idx) => {
-            const x = getX(idx);
-            const y = getY(v);
-            return (
-              <circle
-                key={`${s.role}-${idx}`}
-                cx={x}
-                cy={y}
-                r={2}
-                fill={ROLE_COLORS[s.role]}
-              />
-            );
-          })
-        )}
-      </svg>
-
-      {/* Legend */}
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: "0.5rem",
-          marginTop: "0.25rem",
-          fontSize: "0.75rem",
-        }}
-      >
-        {series.map((s) => (
-          <div
-            key={s.role}
-            style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}
-          >
-            <span
-              style={{
-                width: 10,
-                height: 3,
-                borderRadius: 2,
-                backgroundColor: ROLE_COLORS[s.role],
-                display: "inline-block",
-              }}
-            />
-            <span>{s.label}</span>
+      {gameCode && gameStatus === "in_progress" && (
+        <section className="panel">
+          <div className="section-header">
+            <div>
+              <h3>In-Progress Teams</h3>
+              <p>Track role-level progress and unblock stuck decisions in real time.</p>
+            </div>
+            <div className="tab-row">
+              <span className="chip chip-success">{inProgressSummary.submittedRoles} submitted</span>
+              <span className="chip chip-pending">{inProgressSummary.waitingRoles} waiting</span>
+              <span className="chip chip-neutral">{inProgressSummary.waitingTeams} teams waiting</span>
+            </div>
           </div>
-        ))}
+
+          {teams.length === 0 ? (
+            <div className="empty-state">Waiting for teams to initialize...</div>
+          ) : (
+            <div className="table-wrap">
+              <table className="data-table teams-compact-table">
+                <colgroup>
+                  <col className="teams-col-team" />
+                  <col className="teams-col-week" />
+                  <col className="teams-col-cost" />
+                  <col className="teams-col-role" />
+                  <col className="teams-col-role" />
+                  <col className="teams-col-role" />
+                  <col className="teams-col-role" />
+                  <col className="teams-col-waiting" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Team</th>
+                    <th className="num teams-col-center">Week</th>
+                    <th className="num teams-col-center">Cost</th>
+                    <th>Retailer</th>
+                    <th>Wholesaler</th>
+                    <th>Distributor</th>
+                    <th>Factory</th>
+                    <th className="num">Waiting</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {teams.map((team) => {
+                    const waitingCount = ROLES.filter(
+                      (role) => !team.stages[role].isRobot && !team.ordersSubmitted?.[role]
+                    ).length;
+                    return (
+                      <tr key={team.id} className={waitingCount > 0 ? "row-waiting" : ""}>
+                        <td>
+                          <strong>{team.name}</strong>
+                        </td>
+                        <td className="num teams-col-center">
+                          {team.currentWeek}
+                          {config ? `/${config.nWeeks}` : ""}
+                        </td>
+                        <td className="num teams-col-center">${(team.totalCost || 0).toFixed(2)}</td>
+                        {ROLES.map((role) => {
+                          const stage = team.stages[role];
+                          const isHuman = !stage.isRobot;
+                          const hasSubmitted = Boolean(team.ordersSubmitted?.[role]);
+                          const opKey = `${team.id}:${role}`;
+                          return (
+                            <td key={role}>
+                                <div className="team-role-cell">
+                                  <div className="team-role-main">{stage.playerName ?? "Beer GPT"}</div>
+                                  <div className="team-role-sub">
+                                    <RoleTypeIcon isHuman={isHuman} />
+                                    {isHuman ? (
+                                      <RoleDecisionIcon isSubmitted={hasSubmitted} />
+                                    ) : (
+                                      <span className="team-role-status-placeholder" aria-hidden="true" />
+                                    )}
+                                    {isHuman ? (
+                                      <button
+                                        className="btn-link btn-kick-icon"
+                                        aria-label="Kick player and replace with robot"
+                                        title="Kick player and replace with robot"
+                                        disabled={kickingRoleKey === opKey}
+                                        onClick={() => kickToRobot(team, role)}
+                                      >
+                                        {kickingRoleKey === opKey ? "…" : "↺"}
+                                      </button>
+                                    ) : (
+                                      <span className="team-role-action-placeholder" aria-hidden="true" />
+                                    )}
+                                </div>
+                              </div>
+                            </td>
+                          );
+                        })}
+                        <td className="num">
+                          <strong>{waitingCount}</strong>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+
+      <div aria-live="polite">
+        {feedback && (
+          <div className={`alert ${feedback.tone === "error" ? "alert-error" : "alert-success"}`}>
+            {feedback.message}
+          </div>
+        )}
       </div>
     </div>
   );
 };
 
-function generateGameCode(length: number): string {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let result = "";
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
+function RoleTypeIcon({ isHuman }: { isHuman: boolean }) {
+  return (
+    <span
+      className="team-role-icon"
+      aria-label={isHuman ? "Human" : "Robot"}
+      title={isHuman ? "Human" : "Robot"}
+    >
+      <span className="team-role-icon-emoji" aria-hidden="true">
+        {isHuman ? "👤" : "🤖"}
+      </span>
+    </span>
+  );
+}
+
+function RoleDecisionIcon({ isSubmitted }: { isSubmitted: boolean }) {
+  return (
+    <span
+      className={`team-role-status-icon ${isSubmitted ? "is-submitted" : "is-waiting"}`}
+      aria-label={isSubmitted ? "Submitted" : "Waiting"}
+      title={isSubmitted ? "Submitted" : "Waiting"}
+    >
+      <span aria-hidden="true">{isSubmitted ? "✓" : "⌛"}</span>
+    </span>
+  );
 }
 
 function pickTeamName(index: number, used: Set<string>): string {
-  // Choose a random unused name from the list
   const available = BEER_TEAM_NAMES.filter((name) => !used.has(name));
   let chosen: string;
-
-  if (available.length > 0) {
-    chosen = available[Math.floor(Math.random() * available.length)];
-  } else {
-    // All names used: fall back to reusing names with a numeric suffix
+  if (available.length > 0) chosen = available[Math.floor(Math.random() * available.length)];
+  else {
     const base = BEER_TEAM_NAMES[index % BEER_TEAM_NAMES.length];
     let suffix = 2;
     chosen = `${base} ${suffix}`;
@@ -1389,9 +891,43 @@ function pickTeamName(index: number, used: Set<string>): string {
       chosen = `${base} ${suffix}`;
     }
   }
-
   used.add(chosen);
   return chosen;
+}
+
+function toSessionStatus(value: unknown): SessionLite["status"] {
+  if (value === "lobby" || value === "in_progress" || value === "ended") {
+    return value;
+  }
+  return "lobby";
+}
+
+function toMillis(value: unknown): number | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const timestamp = value as { toMillis?: () => number; seconds?: number };
+  if (typeof timestamp.toMillis === "function") {
+    return timestamp.toMillis();
+  }
+  if (typeof timestamp.seconds === "number") {
+    return timestamp.seconds * 1000;
+  }
+  return null;
+}
+
+function isGameConfig(value: unknown): value is GameConfig {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const cfg = value as Partial<GameConfig>;
+  return (
+    typeof cfg.nWeeks === "number" &&
+    typeof cfg.inventoryCost === "number" &&
+    typeof cfg.backlogCost === "number" &&
+    Array.isArray(cfg.customerDemand) &&
+    typeof cfg.extraOrderDelay === "boolean"
+  );
 }
 
 export default HostLobby;

@@ -3,6 +3,8 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore, setLogLevel } from "firebase/firestore";
 import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "firebase/app-check";
+import { getAuth } from "firebase/auth";
+import { getFunctions } from "firebase/functions";
 
 // Enable verbose Firestore logging in dev to surface permission/connection issues.
 if (import.meta.env.DEV) {
@@ -56,5 +58,7 @@ initializeAppCheck(app, {
 });
 
 export const db = getFirestore(app);
+export const auth = getAuth(app);
+export const functions = getFunctions(app, "us-central1");
 
 export default app;

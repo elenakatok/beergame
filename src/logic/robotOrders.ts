@@ -30,7 +30,7 @@ export function computeOrdersForWeek(
     // If this is a human stage, just use their order (should always be present
     // once the host auto-advance triggers).
     if (!stage.isRobot) {
-      const raw = (partialOrders as any)[role];
+      const raw = partialOrders[role];
       const clean =
         typeof raw === "number" && !Number.isNaN(raw) ? raw : 0;
       orders[role] = Math.max(0, Math.round(clean));

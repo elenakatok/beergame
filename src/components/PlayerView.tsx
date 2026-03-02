@@ -1,13 +1,17 @@
 // src/components/PlayerView.tsx
 import React, { useEffect, useState, useRef } from "react";
 import { db } from "../firebase";
-import { doc, onSnapshot, updateDoc } from "firebase/firestore";
+import { doc, onSnapshot } from "firebase/firestore";
 import { GameConfig, Role, TeamState, ROLES } from "../logic/gameModel";
+import { heartbeatPlayer, submitPlayerOrder } from "../api";
 import waitingBg from "../waitingscreen.png";
 
 const PLAYER_GAME_CODE_KEY = "beerGame_player_gameCode";
 const PLAYER_ID_KEY = "beerGame_player_playerId";
 const PLAYER_ROLE_KEY = "beerGame_player_role";
+const PLAYER_TOKEN_KEY = "beerGame_player_sessionToken";
+const HEARTBEAT_INTERVAL_MS = 10_000;
+const HEARTBEAT_FAILURE_DISCONNECT_COUNT = 3;
 
 interface PlayerData {
   id: string;
@@ -18,32 +22,28 @@ interface PlayerData {
   teamName?: string | null;
 }
 
+type GameSessionStatus = "lobby" | "in_progress" | "ended";
 type Phase = 0 | 1 | 2 | 3 | 4; // 1: receiving, 2: reveal demand, 3: shipping, 4: costs
 
 const PlayerView: React.FC = () => {
-  const [gameCode, setGameCode] = useState<string | null>(null);
-  const [playerId, setPlayerId] = useState<string | null>(null);
-  const [gameStatus, setGameStatus] = useState<
-    "lobby" | "in_progress" | "ended" | null
-  >(null);
+  const [storedSession] = useState(getStoredPlayerSession);
+  const hasStoredSession =
+    Boolean(storedSession.gameCode) && Boolean(storedSession.playerId) && Boolean(storedSession.sessionToken);
+
+  const gameCode = storedSession.gameCode;
+  const playerId = storedSession.playerId;
+  const [gameStatus, setGameStatus] = useState<GameSessionStatus | null>(null);
   const [config, setConfig] = useState<GameConfig | null>(null);
   const [player, setPlayer] = useState<PlayerData | null>(null);
   const [team, setTeam] = useState<TeamState | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  // Reattach session
-  useEffect(() => {
-    const code = localStorage.getItem(PLAYER_GAME_CODE_KEY);
-    const pid = localStorage.getItem(PLAYER_ID_KEY);
-    if (!code || !pid) {
-      setError(
-        "No active player session found. Please rejoin from the home screen."
-      );
-      return;
-    }
-    setGameCode(code);
-    setPlayerId(pid);
-  }, []);
+  const [error, setError] = useState<string | null>(
+    hasStoredSession ? null : "No active player session found. Please rejoin from the home screen."
+  );
+  const sessionToken = storedSession.sessionToken;
+  const [heartbeatFailureCount, setHeartbeatFailureCount] = useState(0);
+  const [browserOnline, setBrowserOnline] = useState<boolean>(navigator.onLine);
+  const isDisconnected =
+    !browserOnline || heartbeatFailureCount >= HEARTBEAT_FAILURE_DISCONNECT_COUNT;
 
   // Game subscription
   useEffect(() => {
@@ -54,9 +54,9 @@ const PlayerView: React.FC = () => {
         setError("Game not found. It may have been deleted.");
         return;
       }
-      const data = snap.data() as any;
-      setGameStatus(data.status);
-      setConfig(data.config as GameConfig);
+      const data = snap.data() as Record<string, unknown>;
+      setGameStatus(toGameStatus(data.status));
+      setConfig(isGameConfig(data.config) ? data.config : null);
     });
     return unsub;
   }, [gameCode]);
@@ -70,18 +70,18 @@ const PlayerView: React.FC = () => {
         setError("You were removed from this game by the host.");
         return;
       }
-      const d = snap.data() as any;
+      const d = snap.data() as Record<string, unknown>;
       const p: PlayerData = {
         id: snap.id,
-        name: d.name,
-        teamId: d.teamId ?? null,
-        role: d.role ?? null,
-        isRobot: d.isRobot ?? false,
-        teamName: d.teamName ?? null,
+        name: typeof d.name === "string" ? d.name : "Player",
+        teamId: typeof d.teamId === "string" ? d.teamId : null,
+        role: toRole(d.role),
+        isRobot: d.isRobot === true,
+        teamName: typeof d.teamName === "string" ? d.teamName : null,
       };
       setPlayer(p);
-      if (d.role) {
-        localStorage.setItem(PLAYER_ROLE_KEY, d.role);
+      if (p.role) {
+        sessionStorage.setItem(PLAYER_ROLE_KEY, p.role);
       }
     });
     return unsub;
@@ -96,27 +96,67 @@ const PlayerView: React.FC = () => {
         setTeam(null);
         return;
       }
-      const data = snap.data() as any;
+      const data = snap.data() as Record<string, unknown>;
       setTeam({
-        ...(data as TeamState),
-        id: data.id ?? snap.id,
+        ...(data as unknown as TeamState),
+        id: typeof data.id === "string" ? data.id : snap.id,
       });
     });
     return unsub;
   }, [gameCode, player?.teamId]);
 
+  useEffect(() => {
+    const onOnline = () => setBrowserOnline(true);
+    const onOffline = () => setBrowserOnline(false);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!gameCode || !playerId || !sessionToken) return;
+
+    let cancelled = false;
+    const ping = async () => {
+      try {
+        await heartbeatPlayer({ gameCode, playerId, sessionToken });
+        if (!cancelled) {
+          setHeartbeatFailureCount(0);
+        }
+      } catch (err) {
+        console.error("heartbeat failed", err);
+        if (!cancelled) {
+          setHeartbeatFailureCount((prev) => prev + 1);
+        }
+      }
+    };
+
+    void ping();
+    const id = window.setInterval(ping, HEARTBEAT_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [gameCode, playerId, sessionToken]);
+
   const handleSubmitOrder = async (order: number) => {
-    if (!gameCode || !player?.teamId || !player.role) return;
+    if (!gameCode || !playerId || !sessionToken || !player?.teamId || !player.role) return;
     if (!team) return;
+    if (isDisconnected) return;
     if (team.ordersSubmitted && team.ordersSubmitted[player.role]) {
       return; // already submitted
     }
 
-    const teamRef = doc(db, "games", gameCode, "teams", player.teamId);
-    await updateDoc(teamRef, {
-      [`pendingOrders.${player.role}`]: order,
-      [`ordersSubmitted.${player.role}`]: true,
+    await submitPlayerOrder({
+      gameCode,
+      playerId,
+      sessionToken,
+      order,
     });
+    setHeartbeatFailureCount(0);
   };
 
   if (error) {
@@ -239,6 +279,8 @@ const PlayerView: React.FC = () => {
       config={config}
       onSubmitOrder={handleSubmitOrder}
       orderAlreadySubmitted={myOrderSubmitted}
+      connectionHealthy={!isDisconnected}
+      showDisconnectOverlay={isDisconnected}
     />
   );
 };
@@ -250,6 +292,8 @@ interface PlayerBoardProps {
   config: GameConfig;
   onSubmitOrder: (order: number) => void;
   orderAlreadySubmitted: boolean;
+  connectionHealthy: boolean;
+  showDisconnectOverlay: boolean;
 }
 
 const PlayerBoard: React.FC<PlayerBoardProps> = ({
@@ -259,6 +303,8 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
   config,
   onSubmitOrder,
   orderAlreadySubmitted,
+  connectionHealthy,
+  showDisconnectOverlay,
 }) => {
   const me = team.stages[role];
   const week = team.currentWeek;
@@ -293,6 +339,21 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
 
   // Blinking banner
   const [blinkOn, setBlinkOn] = useState(true);
+  const [meterBlinkOn, setMeterBlinkOn] = useState(true);
+
+  const robotCount = ROLES.filter((r) => team.stages[r].isRobot).length;
+  const submittedHumans = ROLES.filter(
+    (r) => !team.stages[r].isRobot && !!team.ordersSubmitted?.[r]
+  ).length;
+  const progressNumerator = robotCount + submittedHumans;
+  const progressDenominator = ROLES.length;
+  const humanRoles = ROLES.filter((r) => !team.stages[r].isRobot);
+  const undecidedHumans = humanRoles.filter((r) => !team.ordersSubmitted?.[r]);
+  const isLastUndecidedHuman =
+    humanRoles.length > 1 &&
+    undecidedHumans.length === 1 &&
+    undecidedHumans[0] === role &&
+    !orderAlreadySubmitted;
 
   // Truck animation
   const [truckPhase, setTruckPhase] = useState<"receiving" | "shipping" | null>(
@@ -388,6 +449,7 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
   };
 
   // Blinking banner effect
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!animationsEnabled) {
       setBlinkOn(true);
@@ -404,6 +466,17 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
       setBlinkOn(true);
     }
   }, [phase, animationsEnabled]);
+
+  useEffect(() => {
+    if (!isLastUndecidedHuman) {
+      setMeterBlinkOn(true);
+      return;
+    }
+    const id = window.setInterval(() => {
+      setMeterBlinkOn((prev) => !prev);
+    }, 450);
+    return () => window.clearInterval(id);
+  }, [isLastUndecidedHuman]);
 
   // Truck animation (2 seconds) for receiving (phase 1) and shipping (phase 3, non-retailer)
   useEffect(() => {
@@ -647,9 +720,10 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
     // don't retrigger your animations, but also on animationsEnabled so we
     // switch from static week 1 to animated week 2 correctly.
   }, [week, animationsEnabled]); // eslint-disable-line react-hooks/exhaustive-deps
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const handleSubmit = () => {
-    if (orderAlreadySubmitted || !canOrder) return;
+    if (orderAlreadySubmitted || !canOrder || !connectionHealthy) return;
 
     const raw = Number(orderInput);
     if (Number.isNaN(raw)) {
@@ -715,6 +789,8 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
 
   const hasBacklog = displayBacklog > 0;
   const isOverstocked = displayInventory > 40;
+  const boardColumnsTemplate = "repeat(3, minmax(0, 1fr))";
+  const boardColumnWidth = "calc((100% - 1.5rem) / 3)";
 
   // Banner text per phase
   let bannerText: string | null = null;
@@ -729,8 +805,7 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
   return (
     <div
       style={{
-        minHeight: "100vh",
-        padding: "1rem 0.5rem 2rem",
+        padding: "0.75rem 0.5rem 1.1rem",
         background:
           "radial-gradient(circle at top, #fff7d1 0, #fdf3e0 45%, #f7e7c3 100%)",
       }}
@@ -739,10 +814,10 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
         style={{
           maxWidth: 960,
           margin: "0 auto 0.5rem",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "flex-start",
-          gap: "1rem",
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)",
+          alignItems: "start",
+          gap: "0.9rem",
         }}
       >
         <div>
@@ -760,11 +835,72 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
             Player: <strong>{playerName}</strong>
           </div>
         </div>
+        <section
+          style={{
+            width: 300,
+            padding: "0.65rem 0.75rem",
+            borderRadius: "0.75rem",
+            border: "1px solid #ecd9aa",
+            background: meterBlinkOn && isLastUndecidedHuman ? "#ffe9b5" : "#fff7e0",
+            transition: "background 0.25s ease, box-shadow 0.25s ease",
+            boxShadow:
+              meterBlinkOn && isLastUndecidedHuman
+                ? "0 0 0 2px rgba(240, 165, 0, 0.2)"
+                : "none",
+          }}
+        >
+          <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#8b5e00", textAlign: "center" }}>
+            Team decisions this week
+          </div>
+          <div
+            style={{
+              marginTop: "0.3rem",
+              fontSize: "0.95rem",
+              color: "#5a3a00",
+              textAlign: "center",
+            }}
+          >
+            {progressNumerator}/{progressDenominator} submitted
+          </div>
+          <div
+            style={{
+              marginTop: "0.35rem",
+              width: "100%",
+              height: 10,
+              borderRadius: 8,
+              background: "#f2e3be",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                width: `${(progressNumerator / Math.max(1, progressDenominator)) * 100}%`,
+                height: "100%",
+                background: isLastUndecidedHuman ? "#e26d00" : "#4f8a10",
+                transition: "width 0.2s ease",
+              }}
+            />
+          </div>
+          {isLastUndecidedHuman && (
+            <div
+              style={{
+                marginTop: "0.35rem",
+                color: "#b14c00",
+                fontSize: "0.78rem",
+                fontWeight: 600,
+                textAlign: "center",
+              }}
+            >
+              You are the last undecided teammate.
+            </div>
+          )}
+        </section>
         <div
           style={{
             textAlign: "right",
             fontSize: "0.85rem",
             color: "#7a5a1f",
+            justifySelf: "end",
           }}
         >
           <div>
@@ -804,46 +940,9 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
         style={{
           maxWidth: 960,
           margin: "0 auto",
-          display: "grid",
-          gridTemplateColumns: "1.2fr 2fr 1.2fr",
-          gap: "0.75rem",
         }}
       >
-        {/* LEFT: no communication */}
-        <section
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "0.75rem",
-          }}
-        >
-          <div
-            style={{
-              padding: "0.5rem",
-              borderRadius: "0.75rem",
-              background: "#fff7e0",
-              border: "1px solid #ecd9aa",
-            }}
-          >
-            <div
-              style={{
-                fontSize: "0.7rem",
-                fontWeight: 600,
-                color: "#8b5e00",
-                marginBottom: "0.35rem",
-              }}
-            >
-              No communication allowed ⚠️
-            </div>
-            <div style={{ fontSize: "0.75rem", color: "#7a5a1f" }}>
-              You may not talk to your teammates. Act only on your own
-              inventory, backlog, and orders. Your goal is to minimize the{" "}
-              <strong>total</strong> supply chain cost.
-            </div>
-          </div>
-        </section>
-
-        {/* CENTER: Orders, inventory, pipelines */}
+        {/* Board: orders, inventory, pipelines */}
         <section
           style={{
             display: "flex",
@@ -851,12 +950,19 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
             gap: "0.75rem",
             alignItems: "stretch",
           }}
-        >
-          {/* Top row: orders */}
-          <div style={{ display: "flex", gap: "0.75rem" }}>
+          >
+            {/* Top row: orders */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: boardColumnsTemplate,
+              gap: "0.75rem",
+              alignItems: "stretch",
+            }}
+          >
             <div
               style={{
-                flex: 1,
+                minWidth: 0,
                 padding: "0.5rem",
                 borderRadius: "0.75rem",
                 background: "#fff7e0",
@@ -881,7 +987,7 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
             </div>
             <div
               style={{
-                flex: 1,
+                minWidth: 0,
                 padding: "0.5rem",
                 borderRadius: "0.75rem",
                 background: "#fff7e0",
@@ -906,25 +1012,93 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
                 hidden={hidePostItOrder}
               />
             </div>
+            <div
+              style={{
+                padding: "0.6rem",
+                borderRadius: "0.75rem",
+                background: "#fff7e0",
+                border: "1px solid #ecd9aa",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "space-between",
+                boxSizing: "border-box",
+                width: "100%",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "0.74rem",
+                  fontWeight: 600,
+                  color: "#8b5e00",
+                  marginBottom: "0.3rem",
+                }}
+              >
+                Place your order for week {week}
+              </div>
+              <input
+                type="number"
+                min={0}
+                value={orderInput}
+                onChange={(e) => setOrderInput(e.target.value)}
+                disabled={orderAlreadySubmitted || !canOrder || !connectionHealthy}
+                style={{
+                  width: "100%",
+                  padding: "0.3rem 0.45rem",
+                  borderRadius: "0.45rem",
+                  border: "1px solid #d6c094",
+                  boxSizing: "border-box",
+                  margin: "0 0 0.42rem",
+                  display: "block",
+                }}
+              />
+              <button
+                onClick={handleSubmit}
+                disabled={orderAlreadySubmitted || !canOrder || !connectionHealthy}
+                style={{
+                  width: "100%",
+                  padding: "0.35rem 0.45rem",
+                  borderRadius: "0.75rem",
+                  border: "none",
+                  boxSizing: "border-box",
+                  fontSize: "0.84rem",
+                  lineHeight: 1.2,
+                  background:
+                    orderAlreadySubmitted || !canOrder || !connectionHealthy ? "#ccc" : "#f0a500",
+                  color: "#fff",
+                  fontWeight: 600,
+                  cursor:
+                    orderAlreadySubmitted || !canOrder || !connectionHealthy ? "default" : "pointer",
+                  display: "block",
+                }}
+              >
+                {orderAlreadySubmitted
+                  ? "Order submitted – waiting for team"
+                  : !connectionHealthy
+                  ? "Reconnect to submit"
+                  : canOrder
+                  ? "Submit order"
+                  : "Please wait for animations…"}
+              </button>
+            </div>
           </div>
 
           {/* Middle: inventory with left & right pipelines */}
           <div
             style={{
-              display: "flex",
+              display: "grid",
+              gridTemplateColumns: boardColumnsTemplate,
               alignItems: "flex-start",
-              justifyContent: "space-between",
               gap: "0.75rem",
             }}
           >
             {/* LEFT COLUMN: outgoing / downstream pipeline */}
             <div
               style={{
-                flex: 1,
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "center",
                 gap: "0.15rem",
+                width: "100%",
               }}
             >
               {role !== "retailer" && (
@@ -983,6 +1157,7 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
             {/* CENTER: inventory */}
             <div
               style={{
+                justifySelf: "center",
                 padding: "1rem",
                 minWidth: 180,
                 borderRadius: "1.25rem",
@@ -1059,11 +1234,11 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
             {/* RIGHT COLUMN: incoming pipeline */}
             <div
               style={{
-                flex: 1,
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "center",
                 gap: "0.15rem",
+                width: "100%",
               }}
             >
               <span
@@ -1125,79 +1300,12 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
               )}
             </div>
           </div>
-        </section>
-
-        {/* RIGHT: order input */}
-        <section
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            justifyContent: "flex-start",
-            gap: "0.75rem",
-          }}
-        >
-          <div
-            style={{
-              padding: "0.75rem",
-              borderRadius: "0.75rem",
-              background: "#fff7e0",
-              border: "1px solid #ecd9aa",
-            }}
-          >
-            <div
-              style={{
-                fontSize: "0.8rem",
-                fontWeight: 600,
-                color: "#8b5e00",
-                marginBottom: "0.35rem",
-              }}
-            >
-              Place your order for week {week}
-            </div>
-            <input
-              type="number"
-              min={0}
-              value={orderInput}
-              onChange={(e) => setOrderInput(e.target.value)}
-              disabled={orderAlreadySubmitted || !canOrder}
-              style={{
-                width: "80%",
-                padding: "0.35rem 0.5rem",
-                borderRadius: "0.5rem",
-                border: "1px solid #d6c094",
-                margin: "0 auto 0.5rem",
-                display: "block",
-              }}
-            />
-            <button
-              onClick={handleSubmit}
-              disabled={orderAlreadySubmitted || !canOrder}
-              style={{
-                width: "80%",
-                padding: "0.4rem 0.5rem",
-                borderRadius: "0.75rem",
-                border: "none",
-                background:
-                  orderAlreadySubmitted || !canOrder ? "#ccc" : "#f0a500",
-                color: "#fff",
-                fontWeight: 600,
-                cursor:
-                  orderAlreadySubmitted || !canOrder ? "default" : "pointer",
-                margin: "0 auto",
-                display: "block",
-              }}
-            >
-              {orderAlreadySubmitted
-                ? "Order submitted – waiting for team"
-                : canOrder
-                ? "Submit order"
-                : "Please wait for animations…"}
-            </button>
-          </div>
 
           {showUpstreamBackorders && partnerUpstream && (
             <div
               style={{
+                marginLeft: "auto",
+                width: boardColumnWidth,
                 padding: "0.75rem",
                 borderRadius: "0.75rem",
                 background: "#fff2f0",
@@ -1265,6 +1373,15 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
         >
           {bannerText}
         </div>
+      )}
+
+      {showDisconnectOverlay && (
+        <OverlayCard
+          title="Connection lost"
+          actions={[]}
+        >
+          Your connection to Firebase appears offline. Reconnect to continue and submit orders.
+        </OverlayCard>
       )}
 
       {/* Order clamped notice */}
@@ -1598,6 +1715,54 @@ function getUpstreamPartnerName(role: Role): string | null {
     default:
       return null;
   }
+}
+
+function toGameStatus(value: unknown): GameSessionStatus | null {
+  if (value === "lobby" || value === "in_progress" || value === "ended") {
+    return value;
+  }
+  return null;
+}
+
+function toRole(value: unknown): Role | null {
+  if (value === "retailer" || value === "wholesaler" || value === "distributor" || value === "factory") {
+    return value;
+  }
+  return null;
+}
+
+function isGameConfig(value: unknown): value is GameConfig {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const cfg = value as Partial<GameConfig>;
+  return (
+    typeof cfg.nWeeks === "number" &&
+    typeof cfg.inventoryCost === "number" &&
+    typeof cfg.backlogCost === "number" &&
+    Array.isArray(cfg.customerDemand) &&
+    typeof cfg.extraOrderDelay === "boolean"
+  );
+}
+
+function getStoredPlayerSession(): {
+  gameCode: string | null;
+  playerId: string | null;
+  sessionToken: string | null;
+} {
+  if (typeof window === "undefined") {
+    return {
+      gameCode: null,
+      playerId: null,
+      sessionToken: null,
+    };
+  }
+
+  return {
+    gameCode: sessionStorage.getItem(PLAYER_GAME_CODE_KEY),
+    playerId: sessionStorage.getItem(PLAYER_ID_KEY),
+    sessionToken: sessionStorage.getItem(PLAYER_TOKEN_KEY),
+  };
 }
 
 // --- Simple SVG line chart for per-team order histories (same as host) ---

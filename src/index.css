@@ -1,9 +1,9 @@
 :root {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Trebuchet MS", "Avenir Next", "Segoe UI", sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color: #0f172a;
-  background-color: #f7f7f7;
+  color: #111c2d;
+  background-color: #f4f6fb;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -12,7 +12,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: #f7f7f7;
+  background: #f4f6fb;
 }
 
 #root {
@@ -25,23 +25,39 @@ a {
 
 button {
   border-radius: 8px;
-  border: 1px solid #d7d7d7;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
+  border: 1px solid #ccd9ea;
+  padding: 0.6em 0.95em;
+  font-size: 0.97em;
   font-weight: 600;
   font-family: inherit;
+  color: #1f3558;
   background-color: #ffffff;
   cursor: pointer;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  min-height: 38px;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.12s ease;
 }
 
 button:hover {
-  border-color: #c0c0c0;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  border-color: #abc2e4;
+  box-shadow: 0 3px 10px rgba(22, 51, 90, 0.12);
+  transform: translateY(-1px);
 }
 
 button:focus,
 button:focus-visible {
-  outline: 2px solid #1f7aec;
+  outline: 2px solid #155ec0;
   outline-offset: 2px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+  transform: none;
+  box-shadow: none;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
 }
