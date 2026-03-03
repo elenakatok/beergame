@@ -86,3 +86,8 @@ Original prompt: Examine the user interface of the admin and instructor dashboar
   - Admin search/filter/sort behavior
   - Session hub filtering
   - Active session dirty-state Save button behavior
+- Player board stability tweak:
+  - Updated `src/components/PlayerView.tsx` so shipment truck lanes always reserve vertical space and only toggle truck visibility.
+  - This prevents the main board card from resizing during shipment animation phases after an order is submitted.
+  - Validation run: `npm run lint` passed.
+  - Playwright validation is currently blocked in this environment because the `playwright` package is missing for `web_game_playwright_client.js`.

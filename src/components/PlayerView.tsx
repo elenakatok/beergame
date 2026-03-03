@@ -1146,10 +1146,11 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
                       highlight={phase === 3}
                     />
                   </div>
-                  {/* Truck lane for SHIPPING (left side) */}
-                  {truckPhase === "shipping" && role !== "retailer" && (
-                    <TruckLane progress={truckProgress} />
-                  )}
+                  {/* Keep lane space reserved to avoid board height jumps */}
+                  <TruckLane
+                    progress={truckProgress}
+                    visible={truckPhase === "shipping" && role !== "retailer"}
+                  />
                 </>
               )}
             </div>
@@ -1294,10 +1295,11 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
                 />
               </div>
 
-              {/* Truck lane for RECEIVING (right side) */}
-              {truckPhase === "receiving" && (
-                <TruckLane progress={truckProgress} />
-              )}
+              {/* Keep lane space reserved to avoid board height jumps */}
+              <TruckLane
+                progress={truckProgress}
+                visible={truckPhase === "receiving"}
+              />
             </div>
           </div>
 
@@ -1630,13 +1632,14 @@ const OverlayCard: React.FC<OverlayCardProps> = ({
 
 interface TruckLaneProps {
   progress: number; // 0 -> 1
+  visible?: boolean;
 }
 
 /**
  * A simple horizontal truck lane: truck moves from right to left
  * across the lane over 2 seconds (driven by progress).
  */
-const TruckLane: React.FC<TruckLaneProps> = ({ progress }) => (
+const TruckLane: React.FC<TruckLaneProps> = ({ progress, visible = true }) => (
   <div
     style={{
       marginTop: "0.4rem",
@@ -1654,6 +1657,7 @@ const TruckLane: React.FC<TruckLaneProps> = ({ progress }) => (
         left: `${(1 - progress) * 80}%`,
         fontSize: "1.4rem",
         transition: "none",
+        opacity: visible ? 1 : 0,
       }}
     >
       🚚
