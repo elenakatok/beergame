@@ -5,6 +5,7 @@ import { doc, onSnapshot } from "firebase/firestore";
 import { GameConfig, Role, TeamState, ROLES } from "../logic/gameModel";
 import { heartbeatPlayer, submitPlayerOrder } from "../api";
 import waitingBg from "../waitingscreen.png";
+import TeamOrdersLineChart from "./charts/TeamOrdersLineChart";
 
 const PLAYER_GAME_CODE_KEY = "beerGame_player_gameCode";
 const PLAYER_ID_KEY = "beerGame_player_playerId";
@@ -254,7 +255,7 @@ const PlayerView: React.FC = () => {
                 Each line shows the orders placed by one supply chain stage in
                 each week.
               </p>
-              <TeamOrdersChart team={team} />
+              <TeamOrdersLineChart team={team} />
             </div>
           </>
         )}
@@ -1768,191 +1769,5 @@ function getStoredPlayerSession(): {
     sessionToken: sessionStorage.getItem(PLAYER_TOKEN_KEY),
   };
 }
-
-// --- Simple SVG line chart for per-team order histories (same as host) ---
-
-const ROLE_COLORS: Record<Role, string> = {
-  retailer: "#d73027",
-  wholesaler: "#4575b4",
-  distributor: "#1a9850",
-  factory: "#984ea3",
-};
-
-interface TeamOrdersChartProps {
-  team: TeamState;
-}
-
-const TeamOrdersChart: React.FC<TeamOrdersChartProps> = ({ team }) => {
-  const series = ROLES.map((role) => ({
-    role,
-    label: role.charAt(0).toUpperCase() + role.slice(1),
-    values: (team.stages[role].history || []).map(
-      (h) => h.orderPlaced ?? 0
-    ),
-  }));
-
-  const maxWeeks = series.reduce(
-    (max, s) => Math.max(max, s.values.length),
-    1
-  );
-
-  // Standardized y-axis for all teams
-  const maxVal = 25;
-
-  const width = 360;
-  const height = 160;
-  const paddingLeft = 32;
-  const paddingRight = 10;
-  const paddingTop = 10;
-  const paddingBottom = 24;
-
-  const plotWidth = width - paddingLeft - paddingRight;
-  const plotHeight = height - paddingTop - paddingBottom;
-
-  const getX = (weekIndex: number) => {
-    if (maxWeeks <= 1) {
-      return paddingLeft + plotWidth / 2;
-    }
-    const t = weekIndex / (maxWeeks - 1);
-    return paddingLeft + t * plotWidth;
-  };
-
-  const getY = (value: number) => {
-    const val = Math.max(value, 0); // allow values > maxVal to go above chart
-    const t = val / maxVal;
-    return paddingTop + (1 - t) * plotHeight;
-  };
-
-  return (
-    <div>
-      <svg width={width} height={height}>
-        {/* Axes */}
-        <line
-          x1={paddingLeft}
-          y1={height - paddingBottom}
-          x2={width - paddingRight}
-          y2={height - paddingBottom}
-          stroke="#aaa"
-          strokeWidth={0.5}
-        />
-        <line
-          x1={paddingLeft}
-          y1={paddingTop}
-          x2={paddingLeft}
-          y2={height - paddingBottom}
-          stroke="#aaa"
-          strokeWidth={0.5}
-        />
-
-        {/* Y-axis labels (0 and max) */}
-        <text
-          x={paddingLeft - 6}
-          y={height - paddingBottom + 10}
-          fontSize={9}
-          textAnchor="end"
-          fill="#555"
-        >
-          0
-        </text>
-        <text
-          x={paddingLeft - 6}
-          y={paddingTop + 3}
-          fontSize={9}
-          textAnchor="end"
-          fill="#555"
-        >
-          {maxVal}
-        </text>
-
-        {/* X-axis labels: week 1 and last week */}
-        <text
-          x={getX(0)}
-          y={height - 6}
-          fontSize={9}
-          textAnchor="middle"
-          fill="#555"
-        >
-          1
-        </text>
-        <text
-          x={getX(maxWeeks - 1)}
-          y={height - 6}
-          fontSize={9}
-          textAnchor="middle"
-          fill="#555"
-        >
-          {maxWeeks}
-        </text>
-
-        {/* Lines per role */}
-        {series.map((s) => {
-          if (s.values.length === 0) return null;
-          const d = s.values
-            .map((v, idx) => {
-              const x = getX(idx);
-              const y = getY(v);
-              return `${idx === 0 ? "M" : "L"} ${x} ${y}`;
-            })
-            .join(" ");
-          return (
-            <path
-              key={s.role}
-              d={d}
-              fill="none"
-              stroke={ROLE_COLORS[s.role]}
-              strokeWidth={1.5}
-            />
-          );
-        })}
-
-        {/* Small circles on points */}
-        {series.map((s) =>
-          s.values.map((v, idx) => {
-            const x = getX(idx);
-            const y = getY(v);
-            return (
-              <circle
-                key={`${s.role}-${idx}`}
-                cx={x}
-                cy={y}
-                r={2}
-                fill={ROLE_COLORS[s.role]}
-              />
-            );
-          })
-        )}
-      </svg>
-
-      {/* Legend */}
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: "0.5rem",
-          marginTop: "0.25rem",
-          fontSize: "0.75rem",
-        }}
-      >
-        {series.map((s) => (
-          <div
-            key={s.role}
-            style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}
-          >
-            <span
-              style={{
-                width: 10,
-                height: 3,
-                borderRadius: 2,
-                backgroundColor: ROLE_COLORS[s.role],
-                display: "inline-block",
-              }}
-            />
-            <span>{s.label}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
 
 export default PlayerView;

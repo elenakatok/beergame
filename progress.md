@@ -91,3 +91,47 @@ Original prompt: Examine the user interface of the admin and instructor dashboar
   - This prevents the main board card from resizing during shipment animation phases after an order is submitted.
   - Validation run: `npm run lint` passed.
   - Playwright validation is currently blocked in this environment because the `playwright` package is missing for `web_game_playwright_client.js`.
+
+## Completed (Endgame Analytics + Export)
+- Added `src/logic/endgameAnalytics.ts` with shared pure computations for:
+  - order series extraction
+  - population variance / standard deviation
+  - bullwhip (`var(factory orders) / var(retailer orders)`, `N/A` when retailer variance is zero)
+  - end-of-session robot count
+  - leaderboard + per-role std-dev row builders
+- Added reusable chart components:
+  - `src/components/charts/TeamOrdersLineChart.tsx`
+  - `src/components/charts/TeamRoleStdDevGroupedBarChart.tsx`
+  - `src/components/charts/chartConstants.ts` for shared role labels/colors
+- Updated `src/components/PlayerView.tsx` to reuse `TeamOrdersLineChart` on the player game-over screen.
+- Extended `src/components/HostLobby.tsx` with a new `status === "ended"` analytics section containing:
+  - leaderboard table (`Rank`, `Team`, `Total cost`, `# Robo players`, `Bullwhip`)
+  - per-team order line charts
+  - grouped std-dev bar chart (retailer/wholesaler/distributor/factory per team)
+  - `Download complete data` action
+  - `Export leaderboard + charts (PDF)` action
+- Added CSV ZIP export utility in `src/utils/sessionCsvExport.ts`:
+  - exports `session.csv`, `leaderboard.csv`, `team_role_stddev.csv`, `team_orders.csv`, `players.csv`
+  - includes CSV escaping + formula-injection hardening
+  - excludes sensitive token/hash fields
+- Added one-click PDF export utility in `src/utils/exportPdf.ts` using `html2canvas` + `jspdf`, including multi-page A4 handling.
+- Extended `src/dashboard.css` with endgame/report/chart styling and responsive behavior.
+- Added dependencies in `package.json`:
+  - `fflate`
+  - `html2canvas`
+  - `jspdf`
+  - lockfile updated via `npm install`.
+
+## Verification (Endgame Analytics + Export)
+- `npm run lint`: pass
+- `npm run build`: pass
+
+## TODO / Suggestions (Endgame Analytics + Export)
+- Add automated tests for `src/logic/endgameAnalytics.ts` (bullwhip edge case, zero-variance handling, stable leaderboard ordering).
+- Add an integration test that ends a session and verifies:
+  - endgame panel visibility
+  - leaderboard rows populated
+  - CSV ZIP includes all expected files
+  - PDF export triggers download flow
+- Optional UX tweak:
+  - hide export action buttons from the PDF capture area if you want cleaner report pages without controls.

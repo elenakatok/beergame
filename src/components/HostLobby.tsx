@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   onSnapshot,
   orderBy,
@@ -25,6 +26,11 @@ import {
 import { computeOrdersForWeek } from "../logic/robotOrders";
 import { simulateWeek } from "../logic/gameEngine";
 import { BEER_TEAM_NAMES } from "../logic/teamNames";
+import TeamOrdersLineChart from "./charts/TeamOrdersLineChart";
+import TeamRoleStdDevGroupedBarChart from "./charts/TeamRoleStdDevGroupedBarChart";
+import { buildLeaderboardRows, buildStdDevRows } from "../logic/endgameAnalytics";
+import { downloadSessionCsvBundle } from "../utils/sessionCsvExport";
+import { exportElementToPdf } from "../utils/exportPdf";
 
 const HOST_GAME_CODE_KEY = "beerGame_host_gameCode";
 const ONLINE_THRESHOLD_MS = 30_000;
@@ -66,8 +72,11 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
   const [sessionSearch, setSessionSearch] = useState("");
   const [sessionFilter, setSessionFilter] = useState<SessionStatusFilter>("all");
   const [kickingRoleKey, setKickingRoleKey] = useState<string | null>(null);
+  const [csvExporting, setCsvExporting] = useState(false);
+  const [pdfExporting, setPdfExporting] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
   const advancingTeamsRef = useRef<Set<string>>(new Set());
+  const reportRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const stored = localStorage.getItem(HOST_GAME_CODE_KEY);
@@ -475,6 +484,75 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
     return { waitingRoles, submittedRoles, waitingTeams };
   }, [teams]);
 
+  const leaderboardRows = useMemo(() => buildLeaderboardRows(teams), [teams]);
+  const stdDevRows = useMemo(() => buildStdDevRows(teams), [teams]);
+  const orderedTeamsForReport = useMemo(() => {
+    const byId = new Map(teams.map((team) => [team.id, team]));
+    return leaderboardRows
+      .map((row) => byId.get(row.teamId))
+      .filter((team): team is TeamState => Boolean(team));
+  }, [teams, leaderboardRows]);
+
+  const downloadCompleteData = async () => {
+    if (!gameCode) return;
+    setCsvExporting(true);
+    try {
+      const gameRef = doc(db, "games", gameCode);
+      const [gameSnap, teamsSnap, playersSnap] = await Promise.all([
+        getDoc(gameRef),
+        getDocs(collection(gameRef, "teams")),
+        getDocs(collection(gameRef, "players")),
+      ]);
+
+      if (!gameSnap.exists()) {
+        throw new Error("Session not found.");
+      }
+
+      const latestTeams: TeamState[] = teamsSnap.docs.map((teamDoc) => ({
+        ...(teamDoc.data() as TeamState),
+        id: teamDoc.id,
+      }));
+      const latestLeaderboardRows = buildLeaderboardRows(latestTeams);
+      const latestStdDevRows = buildStdDevRows(latestTeams);
+
+      downloadSessionCsvBundle({
+        gameCode,
+        sessionData: gameSnap.data() as Record<string, unknown>,
+        teams: latestTeams,
+        players: playersSnap.docs.map((playerDoc) => ({
+          id: playerDoc.id,
+          data: playerDoc.data() as Record<string, unknown>,
+        })),
+        leaderboardRows: latestLeaderboardRows,
+        stdDevRows: latestStdDevRows,
+      });
+
+      setFeedback({ tone: "success", message: "Session data downloaded." });
+    } catch (err) {
+      console.error(err);
+      setFeedback({ tone: "error", message: "Unable to download session data." });
+    } finally {
+      setCsvExporting(false);
+    }
+  };
+
+  const exportReportPdf = async () => {
+    if (!gameCode || !reportRef.current) return;
+    setPdfExporting(true);
+    try {
+      await exportElementToPdf({
+        element: reportRef.current,
+        fileName: `${gameCode}-endgame-report.pdf`,
+      });
+      setFeedback({ tone: "success", message: "PDF report exported." });
+    } catch (err) {
+      console.error(err);
+      setFeedback({ tone: "error", message: "Unable to export PDF report." });
+    } finally {
+      setPdfExporting(false);
+    }
+  };
+
   return (
     <div className="dashboard-stack">
       <section className="panel">
@@ -841,6 +919,86 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
         </section>
       )}
 
+      {gameCode && gameStatus === "ended" && (
+        <section className="panel endgame-panel">
+          <div className="section-header">
+            <div>
+              <h3>Endgame Statistics</h3>
+              <p>Session results, bullwhip metrics, and order variability by team.</p>
+            </div>
+            <span className="chip chip-ended">Session ended</span>
+          </div>
+
+          <div className="actions-row export-actions">
+            <button className="btn-subtle" onClick={downloadCompleteData} disabled={csvExporting}>
+              {csvExporting ? "Preparing CSV bundle..." : "Download complete data"}
+            </button>
+            <button className="btn-primary" onClick={exportReportPdf} disabled={pdfExporting}>
+              {pdfExporting ? "Building PDF..." : "Export leaderboard + charts (PDF)"}
+            </button>
+          </div>
+
+          <div className="endgame-report" ref={reportRef}>
+            <section className="endgame-block">
+              <div className="section-header">
+                <div>
+                  <h4>Leaderboard</h4>
+                </div>
+              </div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th className="num">Rank</th>
+                      <th>Team</th>
+                      <th className="num">Total cost</th>
+                      <th className="num"># Robo players</th>
+                      <th className="num">Bullwhip</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {leaderboardRows.map((row) => (
+                      <tr key={row.teamId}>
+                        <td className="num">{row.rank}</td>
+                        <td>{row.teamName}</td>
+                        <td className="num">${row.totalCost.toFixed(2)}</td>
+                        <td className="num">{row.robotCount}</td>
+                        <td className="num">{formatBullwhip(row.bullwhip)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section className="endgame-block">
+              <div className="section-header">
+                <div>
+                  <h4>Orders Over Time (All Teams)</h4>
+                </div>
+              </div>
+              <div className="endgame-chart-grid">
+                {orderedTeamsForReport.map((team) => (
+                  <article key={team.id} className="endgame-chart-card">
+                    <h5>{team.name}</h5>
+                    <TeamOrdersLineChart team={team} />
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <section className="endgame-block">
+              <div className="section-header">
+                <div>
+                  <h4>Order Standard Deviation by Team and Role</h4>
+                </div>
+              </div>
+              <TeamRoleStdDevGroupedBarChart rows={stdDevRows} />
+            </section>
+          </div>
+        </section>
+      )}
+
       <div aria-live="polite">
         {feedback && (
           <div className={`alert ${feedback.tone === "error" ? "alert-error" : "alert-success"}`}>
@@ -928,6 +1086,11 @@ function isGameConfig(value: unknown): value is GameConfig {
     Array.isArray(cfg.customerDemand) &&
     typeof cfg.extraOrderDelay === "boolean"
   );
+}
+
+function formatBullwhip(value: number | null): string {
+  if (value === null) return "N/A";
+  return value.toFixed(3);
 }
 
 export default HostLobby;
