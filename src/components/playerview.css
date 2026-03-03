@@ -1,0 +1,652 @@
+/* ============================================================
+   PlayerView — Beer Game board styles
+   ============================================================ */
+
+/* --- Design tokens (beer theme) --- */
+:root {
+  --pv-brown-dark: #5a3a00;
+  --pv-brown-mid: #6b4c00;
+  --pv-brown: #8b5e00;
+  --pv-brown-light: #7a5a1f;
+  --pv-gold: #f0a500;
+  --pv-gold-dark: #e26d00;
+  --pv-yellow: #ffe777;
+  --pv-yellow-light: #ffe9b5;
+  --pv-cream: #fff7e0;
+  --pv-cream-dark: #fdf3e0;
+  --pv-border: #ecd9aa;
+  --pv-border-dark: #d6c094;
+  --pv-red: #a02020;
+  --pv-red-light: #b14c00;
+  --pv-radius: 0.75rem;
+  --pv-radius-lg: 1.25rem;
+  --pv-max-width: 960px;
+}
+
+/* --- Waiting / lobby screens --- */
+.pv-waiting-screen {
+  min-height: 100vh;
+  background-size: cover;
+  background-position: center;
+  padding: 1.25rem;
+}
+
+/* --- Error / loading states --- */
+.pv-error {
+  color: red;
+}
+
+.pv-game-over {
+  padding: 1rem;
+}
+
+.pv-game-over-chart {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--pv-radius);
+  border: 1px solid #ddd;
+  background: #faf6e9;
+  max-width: 420px;
+}
+
+.pv-game-over-chart h3 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+}
+
+.pv-game-over-chart p {
+  font-size: 0.8rem;
+  color: #555;
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+}
+
+/* --- PlayerBoard wrapper --- */
+.pv-board {
+  padding: 0.75rem 0.5rem 1.1rem;
+  background: radial-gradient(circle at top, #fff7d1 0, var(--pv-cream-dark) 45%, #f7e7c3 100%);
+  border-radius: var(--pv-radius-lg);
+}
+
+/* --- Header --- */
+.pv-header {
+  max-width: var(--pv-max-width);
+  margin: 0 auto 0.5rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.9rem;
+}
+
+.pv-header-subtitle {
+  font-size: 0.9rem;
+  color: var(--pv-brown);
+}
+
+.pv-header-team {
+  margin: 0.2rem 0;
+}
+
+.pv-header-team-name {
+  color: var(--pv-brown);
+}
+
+.pv-header-role {
+  font-size: 0.9rem;
+  color: var(--pv-brown-light);
+}
+
+.pv-header-role strong {
+  text-transform: capitalize;
+}
+
+.pv-header-player {
+  font-size: 0.85rem;
+  color: var(--pv-brown-light);
+}
+
+/* --- Team progress meter --- */
+.pv-meter {
+  width: 300px;
+  padding: 0.65rem 0.75rem;
+  border-radius: var(--pv-radius);
+  border: 1px solid var(--pv-border);
+  background: var(--pv-cream);
+  transition: background 0.25s ease, box-shadow 0.25s ease;
+}
+
+.pv-meter--urgent {
+  background: var(--pv-yellow-light);
+  box-shadow: 0 0 0 2px rgba(240, 165, 0, 0.2);
+}
+
+.pv-meter-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--pv-brown);
+  text-align: center;
+}
+
+.pv-meter-count {
+  margin-top: 0.3rem;
+  font-size: 0.95rem;
+  color: var(--pv-brown-dark);
+  text-align: center;
+}
+
+.pv-meter-track {
+  margin-top: 0.35rem;
+  width: 100%;
+  height: 10px;
+  border-radius: 8px;
+  background: #f2e3be;
+  overflow: hidden;
+}
+
+.pv-meter-fill {
+  height: 100%;
+  background: #4f8a10;
+  transition: width 0.2s ease;
+}
+
+.pv-meter-fill--urgent {
+  background: var(--pv-gold-dark);
+}
+
+.pv-meter-warning {
+  margin-top: 0.35rem;
+  color: var(--pv-red-light);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+/* --- Cost summary (right header column) --- */
+.pv-costs {
+  text-align: right;
+  font-size: 0.85rem;
+  color: var(--pv-brown-light);
+  justify-self: end;
+}
+
+.pv-costs-last {
+  margin-top: 0.25rem;
+}
+
+/* --- Week banner --- */
+.pv-week-banner {
+  max-width: var(--pv-max-width);
+  margin: 0 auto 0.75rem;
+  text-align: center;
+  font-size: 1.3rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #000;
+  text-transform: uppercase;
+}
+
+/* --- Main board area --- */
+.pv-main {
+  max-width: var(--pv-max-width);
+  margin: 0 auto;
+}
+
+.pv-board-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: stretch;
+  min-height: 340px;
+}
+
+/* --- Board grid rows --- */
+.pv-board-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  align-items: stretch;
+}
+
+.pv-board-row--middle {
+  align-items: flex-start;
+}
+
+/* --- Card (reusable card tile) --- */
+.pv-card {
+  min-width: 0;
+  padding: 0.5rem;
+  border-radius: var(--pv-radius);
+  background: var(--pv-cream);
+  border: 1px solid var(--pv-border);
+}
+
+.pv-card-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--pv-brown);
+  margin-bottom: 0.35rem;
+}
+
+/* --- Order input card --- */
+.pv-order-card {
+  padding: 0.6rem;
+  border-radius: var(--pv-radius);
+  background: var(--pv-cream);
+  border: 1px solid var(--pv-border);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.pv-order-card-label {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--pv-brown);
+  margin-bottom: 0.3rem;
+}
+
+.pv-order-input {
+  width: 100%;
+  padding: 0.3rem 0.45rem;
+  border-radius: 0.45rem;
+  border: 1px solid var(--pv-border-dark);
+  box-sizing: border-box;
+  margin: 0 0 0.42rem;
+  display: block;
+}
+
+.pv-order-btn {
+  width: 100%;
+  padding: 0.35rem 0.45rem;
+  border-radius: var(--pv-radius);
+  border: none;
+  box-sizing: border-box;
+  font-size: 0.84rem;
+  line-height: 1.2;
+  background: var(--pv-gold);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  display: block;
+}
+
+.pv-order-btn:disabled {
+  background: #ccc;
+  cursor: default;
+}
+
+/* --- Pipeline column --- */
+.pv-pipeline-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  width: 100%;
+}
+
+.pv-pipeline-title {
+  font-size: 0.7rem;
+  color: var(--pv-brown);
+  font-weight: 600;
+}
+
+.pv-pipeline-subtitle {
+  font-size: 0.65rem;
+  color: var(--pv-brown);
+}
+
+.pv-pipeline-delays {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.2rem;
+}
+
+.pv-pipeline-arrow {
+  font-size: 1.4rem;
+}
+
+/* --- Inventory box (center) --- */
+.pv-inventory {
+  justify-self: center;
+  padding: 1rem;
+  min-width: 180px;
+  border-radius: var(--pv-radius-lg);
+  background: var(--pv-yellow-light);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.05);
+  text-align: center;
+  transition: transform 0.25s ease;
+}
+
+.pv-inventory--active {
+  transform: scale(1.03);
+}
+
+.pv-inventory-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--pv-brown);
+  margin-bottom: 0.25rem;
+}
+
+.pv-inventory-value {
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 0.25rem;
+}
+
+.pv-inventory-icon {
+  font-size: 2rem;
+}
+
+.pv-inventory-number {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--pv-brown-dark);
+}
+
+.pv-backlog-row {
+  margin-top: 0.25rem;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--pv-red);
+}
+
+.pv-backlog-icon {
+  font-size: 1.4rem;
+}
+
+.pv-inventory-costs {
+  margin-top: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--pv-brown-light);
+}
+
+/* --- Upstream backorder card --- */
+.pv-upstream-backorder {
+  margin-left: auto;
+  width: calc((100% - 1.5rem) / 3);
+  padding: 0.75rem;
+  border-radius: var(--pv-radius);
+  background: #fff2f0;
+  border: 1px solid #f3b4ad;
+}
+
+.pv-upstream-backorder-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--pv-brown);
+  margin-bottom: 0.25rem;
+}
+
+.pv-upstream-backorder-value {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+
+.pv-upstream-backorder-number {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--pv-red);
+}
+
+.pv-upstream-backorder-unit {
+  color: var(--pv-brown-light);
+  font-size: 0.9rem;
+}
+
+.pv-upstream-backorder-note {
+  font-size: 0.85rem;
+  color: var(--pv-brown-light);
+  margin-top: 0.35rem;
+}
+
+/* --- Blinking banner --- */
+.pv-banner {
+  max-width: var(--pv-max-width);
+  margin: 1rem auto 0;
+  text-align: center;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--pv-brown);
+  transition: opacity 0.3s ease;
+  min-height: 1.5em;
+}
+
+/* --- DelayBox --- */
+.pv-delay-box {
+  width: 70px;
+  height: 70px;
+  border-radius: 0.85rem;
+  border: 1px solid var(--pv-border);
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.pv-delay-box--highlight {
+  transform: scale(1.05);
+  box-shadow: 0 0 6px rgba(139, 94, 0, 0.35);
+}
+
+.pv-delay-box-label {
+  font-size: 0.65rem;
+  color: var(--pv-brown);
+  margin-bottom: 0.1rem;
+}
+
+.pv-delay-box-value {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.15rem;
+}
+
+.pv-delay-box-icon {
+  font-size: 1.2rem;
+}
+
+.pv-delay-box-number {
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: var(--pv-brown-dark);
+}
+
+/* --- PostIt --- */
+.pv-postit {
+  position: relative;
+  width: 100%;
+  height: 70px;
+  border-radius: var(--pv-radius);
+  background: var(--pv-yellow);
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.35s ease;
+}
+
+.pv-postit-label {
+  position: absolute;
+  top: 4px;
+  left: 8px;
+  font-size: 0.6rem;
+  color: var(--pv-brown-mid);
+}
+
+.pv-postit-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--pv-brown-mid);
+}
+
+/* --- OverlayCard (modal) --- */
+.pv-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 1000;
+  outline: none;
+}
+
+.pv-overlay-card {
+  min-width: 280px;
+  max-width: 420px;
+  background: #fffaf0;
+  border: 1px solid #e2cfa0;
+  border-radius: var(--pv-radius);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+  padding: 1rem;
+}
+
+.pv-overlay-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  gap: 0.5rem;
+}
+
+.pv-overlay-title {
+  margin: 0;
+  color: var(--pv-brown-dark);
+}
+
+.pv-overlay-close {
+  border: 1px solid var(--pv-border-dark);
+  border-radius: 0.5rem;
+  background: var(--pv-cream);
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+}
+
+.pv-overlay-body {
+  color: #4a3513;
+  font-size: 0.95rem;
+}
+
+.pv-overlay-actions {
+  margin-top: 0.75rem;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.pv-overlay-btn {
+  padding: 0.4rem 0.75rem;
+  border-radius: 0.6rem;
+  border: 1px solid var(--pv-border-dark);
+  background: var(--pv-cream);
+  color: var(--pv-brown-dark);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pv-overlay-btn--primary {
+  background: var(--pv-gold);
+  color: #fff;
+}
+
+/* --- TruckLane --- */
+.pv-truck-lane {
+  margin-top: 0.4rem;
+  width: 100%;
+  height: 24px;
+  position: relative;
+  overflow: hidden;
+}
+
+.pv-truck-lane-emoji {
+  position: absolute;
+  bottom: 0;
+  font-size: 1.4rem;
+  transition: none;
+}
+
+/* ============================================================
+   Responsive breakpoints
+   ============================================================ */
+
+/* Tablet: stack header to 2 columns */
+@media (max-width: 960px) {
+  .pv-header {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+  }
+
+  .pv-meter {
+    width: 100%;
+    grid-column: 1 / -1;
+    order: -1;
+  }
+
+  .pv-costs {
+    text-align: left;
+    justify-self: start;
+  }
+}
+
+/* Mobile: single-column layout */
+@media (max-width: 640px) {
+  .pv-header {
+    grid-template-columns: 1fr;
+  }
+
+  .pv-costs {
+    text-align: left;
+  }
+
+  .pv-board-row,
+  .pv-board-row--middle {
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+  }
+
+  .pv-inventory {
+    justify-self: stretch;
+    min-width: unset;
+  }
+
+  .pv-pipeline-col {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.5rem;
+  }
+
+  .pv-pipeline-delays {
+    margin-top: 0;
+  }
+
+  .pv-upstream-backorder {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .pv-delay-box {
+    width: 60px;
+    height: 60px;
+  }
+
+  .pv-postit {
+    height: 60px;
+  }
+
+  .pv-meter {
+    width: 100%;
+  }
+}

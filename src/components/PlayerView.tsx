@@ -6,6 +6,7 @@ import { GameConfig, Role, TeamState, ROLES } from "../logic/gameModel";
 import { heartbeatPlayer, submitPlayerOrder } from "../api";
 import waitingBg from "../waitingscreen.webp";
 import TeamOrdersLineChart from "./charts/TeamOrdersLineChart";
+import "./playerview.css";
 
 const PLAYER_GAME_CODE_KEY = "beerGame_player_gameCode";
 const PLAYER_ID_KEY = "beerGame_player_playerId";
@@ -173,7 +174,7 @@ const PlayerView: React.FC = () => {
   };
 
   if (error) {
-    return <div style={{ color: "red" }}>{error}</div>;
+    return <div className="pv-error">{error}</div>;
   }
 
   if (!player || !gameCode || !gameStatus || !config) {
@@ -187,13 +188,8 @@ const PlayerView: React.FC = () => {
   if (gameStatus === "lobby") {
     return (
       <div
-        style={{
-          minHeight: "100vh",
-          backgroundImage: `linear-gradient(rgba(255,255,255,0.9), rgba(255,255,255,0.9)), url(${waitingBg})`,
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-          padding: "1.25rem",
-        }}
+        className="pv-waiting-screen"
+        style={{ backgroundImage: `linear-gradient(rgba(255,255,255,0.9), rgba(255,255,255,0.9)), url(${waitingBg})` }}
       >
         <h2>Lobby</h2>
         <p>
@@ -208,13 +204,8 @@ const PlayerView: React.FC = () => {
   if (gameStatus === "in_progress" && (!player.teamId || !player.role)) {
     return (
       <div
-        style={{
-          minHeight: "100vh",
-          backgroundImage: `linear-gradient(rgba(255,255,255,0.9), rgba(255,255,255,0.9)), url(${waitingBg})`,
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-          padding: "1.25rem",
-        }}
+        className="pv-waiting-screen"
+        style={{ backgroundImage: `linear-gradient(rgba(255,255,255,0.9), rgba(255,255,255,0.9)), url(${waitingBg})` }}
       >
         <h2>Assigning teams…</h2>
         <p>
@@ -227,7 +218,7 @@ const PlayerView: React.FC = () => {
 
   if (isGameOverForPlayer) {
     return (
-      <div style={{ padding: "1rem" }}>
+      <div className="pv-game-over">
         <h2>Game over</h2>
         <p>
           Thank you for playing, <strong>{player.name}</strong>.
@@ -243,27 +234,9 @@ const PlayerView: React.FC = () => {
               Your supply chain&apos;s total cost was{" "}
               <strong>${team.totalCost.toFixed(2)}</strong>.
             </p>
-            <div
-              style={{
-                marginTop: "1rem",
-                padding: "0.75rem 1rem",
-                borderRadius: "0.75rem",
-                border: "1px solid #ddd",
-                background: "#faf6e9",
-                maxWidth: 420,
-              }}
-            >
-              <h3 style={{ marginTop: 0, marginBottom: "0.5rem" }}>
-                Orders over time (your team)
-              </h3>
-              <p
-                style={{
-                  fontSize: "0.8rem",
-                  color: "#555",
-                  marginTop: 0,
-                  marginBottom: "0.5rem",
-                }}
-              >
+            <div className="pv-game-over-chart">
+              <h3>Orders over time (your team)</h3>
+              <p>
                 Each line shows the orders placed by one supply chain stage in
                 each week.
               </p>
@@ -805,8 +778,6 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
 
   const hasBacklog = displayBacklog > 0;
   const isOverstocked = displayInventory > OVERSTOCK_THRESHOLD;
-  const boardColumnsTemplate = "repeat(3, minmax(0, 1fr))";
-  const boardColumnWidth = "calc((100% - 1.5rem) / 3)";
   const hasValidOrder = orderInput.trim() !== "" && !Number.isNaN(Number(orderInput));
   const submitDisabled = orderAlreadySubmitted || !canOrder || !connectionHealthy || !hasValidOrder;
 
@@ -821,106 +792,38 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
   }
 
   return (
-    <div
-      style={{
-        padding: "0.75rem 0.5rem 1.1rem",
-        background:
-          "radial-gradient(circle at top, #fff7d1 0, #fdf3e0 45%, #f7e7c3 100%)",
-      }}
-    >
-      <header
-        style={{
-          maxWidth: 960,
-          margin: "0 auto 0.5rem",
-          display: "grid",
-          gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)",
-          alignItems: "start",
-          gap: "0.9rem",
-        }}
-      >
+    <div className="pv-board">
+      <header className="pv-header">
         <div>
-          <div style={{ fontSize: "0.9rem", color: "#8b5e00" }}>
-            Beer Distribution Game
-          </div>
-          <h2 style={{ margin: "0.2rem 0" }}>
-            🍺 Team <span style={{ color: "#8b5e00" }}>{team.name}</span>
+          <div className="pv-header-subtitle">Beer Distribution Game</div>
+          <h2 className="pv-header-team">
+            🍺 Team <span className="pv-header-team-name">{team.name}</span>
           </h2>
-          <div style={{ fontSize: "0.9rem", color: "#7a5a1f" }}>
-            You are the{" "}
-            <strong style={{ textTransform: "capitalize" }}>{role}</strong>
+          <div className="pv-header-role">
+            You are the <strong>{role}</strong>
           </div>
-          <div style={{ fontSize: "0.85rem", color: "#7a5a1f" }}>
+          <div className="pv-header-player">
             Player: <strong>{playerName}</strong>
           </div>
         </div>
-        <section
-          style={{
-            width: 300,
-            padding: "0.65rem 0.75rem",
-            borderRadius: "0.75rem",
-            border: "1px solid #ecd9aa",
-            background: meterBlinkOn && isLastUndecidedHuman ? "#ffe9b5" : "#fff7e0",
-            transition: "background 0.25s ease, box-shadow 0.25s ease",
-            boxShadow:
-              meterBlinkOn && isLastUndecidedHuman
-                ? "0 0 0 2px rgba(240, 165, 0, 0.2)"
-                : "none",
-          }}
-        >
-          <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#8b5e00", textAlign: "center" }}>
-            Team decisions this week
-          </div>
-          <div
-            style={{
-              marginTop: "0.3rem",
-              fontSize: "0.95rem",
-              color: "#5a3a00",
-              textAlign: "center",
-            }}
-          >
+        <section className={`pv-meter${meterBlinkOn && isLastUndecidedHuman ? " pv-meter--urgent" : ""}`}>
+          <div className="pv-meter-title">Team decisions this week</div>
+          <div className="pv-meter-count">
             {progressNumerator}/{progressDenominator} submitted
           </div>
-          <div
-            style={{
-              marginTop: "0.35rem",
-              width: "100%",
-              height: 10,
-              borderRadius: 8,
-              background: "#f2e3be",
-              overflow: "hidden",
-            }}
-          >
+          <div className="pv-meter-track">
             <div
-              style={{
-                width: `${(progressNumerator / Math.max(1, progressDenominator)) * 100}%`,
-                height: "100%",
-                background: isLastUndecidedHuman ? "#e26d00" : "#4f8a10",
-                transition: "width 0.2s ease",
-              }}
+              className={`pv-meter-fill${isLastUndecidedHuman ? " pv-meter-fill--urgent" : ""}`}
+              style={{ width: `${(progressNumerator / Math.max(1, progressDenominator)) * 100}%` }}
             />
           </div>
           {isLastUndecidedHuman && (
-            <div
-              style={{
-                marginTop: "0.35rem",
-                color: "#b14c00",
-                fontSize: "0.78rem",
-                fontWeight: 600,
-                textAlign: "center",
-              }}
-            >
+            <div className="pv-meter-warning">
               You are the last undecided teammate.
             </div>
           )}
         </section>
-        <div
-          style={{
-            textAlign: "right",
-            fontSize: "0.85rem",
-            color: "#7a5a1f",
-            justifySelf: "end",
-          }}
-        >
+        <div className="pv-costs">
           <div>
             <strong>Your cumulative cost up to this week:</strong>{" "}
             ${myCumulativeCost.toFixed(2)}
@@ -930,7 +833,7 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
             ${supplyChainCostSoFar.toFixed(2)}
           </div>
           {lastRecord && (
-            <div style={{ marginTop: "0.25rem" }}>
+            <div className="pv-costs-last">
               <strong>Cost in last completed week:</strong> $
               {lastRecord.cost.toFixed(2)}
             </div>
@@ -938,89 +841,22 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
         </div>
       </header>
 
-      {/* Centered week banner */}
-      <div
-        style={{
-          maxWidth: 960,
-          margin: "0 auto 0.75rem",
-          textAlign: "center",
-          fontSize: "1.1rem",
-          fontWeight: 700,
-          letterSpacing: "0.08em",
-          color: "#8b5e00",
-          textTransform: "uppercase",
-        }}
-      >
-        Week {week}
-      </div>
+      <div className="pv-week-banner">Week {week}</div>
 
-      <main
-        style={{
-          maxWidth: 960,
-          margin: "0 auto",
-        }}
-      >
-        {/* Board: orders, inventory, pipelines */}
-        <section
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "0.75rem",
-            alignItems: "stretch",
-            minHeight: 340,
-          }}
-          >
-            {/* Top row: orders */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: boardColumnsTemplate,
-              gap: "0.75rem",
-              alignItems: "stretch",
-            }}
-          >
-            <div
-              style={{
-                minWidth: 0,
-                padding: "0.5rem",
-                borderRadius: "0.75rem",
-                background: "#fff7e0",
-                border: "1px solid #ecd9aa",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: "0.7rem",
-                  fontWeight: 600,
-                  color: "#8b5e00",
-                  marginBottom: "0.35rem",
-                }}
-              >
-                Incoming Orders / Demand
-              </div>
+      <main className="pv-main">
+        <section className="pv-board-section">
+          {/* Top row: orders */}
+          <div className="pv-board-row">
+            <div className="pv-card">
+              <div className="pv-card-label">Incoming Orders / Demand</div>
               <PostIt
                 label={incomingLabel}
                 value={incomingValue}
                 hidden={!showIncomingOrder}
               />
             </div>
-            <div
-              style={{
-                minWidth: 0,
-                padding: "0.5rem",
-                borderRadius: "0.75rem",
-                background: "#fff7e0",
-                border: "1px solid #ecd9aa",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: "0.7rem",
-                  fontWeight: 600,
-                  color: "#8b5e00",
-                  marginBottom: "0.35rem",
-                }}
-              >
+            <div className="pv-card">
+              <div className="pv-card-label">
                 {isFactory
                   ? "Production request (this week)"
                   : "Order you place (this week)"}
@@ -1031,62 +867,22 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
                 hidden={hidePostItOrder}
               />
             </div>
-            <div
-              style={{
-                padding: "0.6rem",
-                borderRadius: "0.75rem",
-                background: "#fff7e0",
-                border: "1px solid #ecd9aa",
-                display: "flex",
-                flexDirection: "column",
-                justifyContent: "space-between",
-                boxSizing: "border-box",
-                width: "100%",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: "0.74rem",
-                  fontWeight: 600,
-                  color: "#8b5e00",
-                  marginBottom: "0.3rem",
-                }}
-              >
+            <div className="pv-order-card">
+              <div className="pv-order-card-label">
                 Place your order for week {week}
               </div>
               <input
+                className="pv-order-input"
                 type="number"
                 min={0}
                 value={orderInput}
                 onChange={(e) => setOrderInput(e.target.value)}
                 disabled={orderAlreadySubmitted || !canOrder || !connectionHealthy}
-                style={{
-                  width: "100%",
-                  padding: "0.3rem 0.45rem",
-                  borderRadius: "0.45rem",
-                  border: "1px solid #d6c094",
-                  boxSizing: "border-box",
-                  margin: "0 0 0.42rem",
-                  display: "block",
-                }}
               />
               <button
+                className="pv-order-btn"
                 onClick={handleSubmit}
                 disabled={submitDisabled}
-                style={{
-                  width: "100%",
-                  padding: "0.35rem 0.45rem",
-                  borderRadius: "0.75rem",
-                  border: "none",
-                  boxSizing: "border-box",
-                  fontSize: "0.84rem",
-                  lineHeight: 1.2,
-                  background: submitDisabled ? "#ccc" : "#f0a500",
-                  color: "#fff",
-                  fontWeight: 600,
-                  cursor: submitDisabled ? "default" : "pointer",
-                  display: "block",
-                }}
               >
                 {orderAlreadySubmitted
                   ? "Order submitted – waiting for team"
@@ -1100,274 +896,82 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
           </div>
 
           {/* Middle: inventory with left & right pipelines */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: boardColumnsTemplate,
-              alignItems: "flex-start",
-              gap: "0.75rem",
-            }}
-          >
+          <div className="pv-board-row pv-board-row--middle">
             {/* LEFT COLUMN: outgoing / downstream pipeline */}
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: "0.15rem",
-                width: "100%",
-              }}
-            >
+            <div className="pv-pipeline-col">
               {role !== "retailer" && (
                 <>
-                  <span
-                    style={{
-                      fontSize: "0.7rem",
-                      color: "#8b5e00",
-                      fontWeight: 600,
-                    }}
-                  >
-                    Outgoing shipments
-                  </span>
+                  <span className="pv-pipeline-title">Outgoing shipments</span>
                   {outgoingPartner && (
-                    <span
-                      style={{
-                        fontSize: "0.65rem",
-                        color: "#8b5e00",
-                      }}
-                    >
-                      {outgoingPartner}
-                    </span>
+                    <span className="pv-pipeline-subtitle">{outgoingPartner}</span>
                   )}
                 </>
               )}
               {partnerDownstream && (
                 <>
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: "0.5rem",
-                      alignItems: "center",
-                      marginTop: role !== "retailer" ? "0.2rem" : 0,
-                    }}
-                  >
-                    <DelayBox
-                      label="Delay 1"
-                      value={displayDownDelay1}
-                      highlight={phase === 3}
-                    />
-                    <span style={{ fontSize: "1.4rem" }}>⬅️</span>
-                    <DelayBox
-                      label="Delay 2"
-                      value={displayDownDelay2}
-                      highlight={phase === 3}
-                    />
+                  <div className="pv-pipeline-delays" style={role !== "retailer" ? undefined : { marginTop: 0 }}>
+                    <DelayBox label="Delay 1" value={displayDownDelay1} highlight={phase === 3} />
+                    <span className="pv-pipeline-arrow">⬅️</span>
+                    <DelayBox label="Delay 2" value={displayDownDelay2} highlight={phase === 3} />
                   </div>
-                  {/* Keep lane space reserved to avoid board height jumps */}
-                  <TruckLane
-                    progress={truckProgress}
-                    visible={truckPhase === "shipping" && role !== "retailer"}
-                  />
+                  <TruckLane progress={truckProgress} visible={truckPhase === "shipping" && role !== "retailer"} />
                 </>
               )}
             </div>
 
             {/* CENTER: inventory */}
-            <div
-              style={{
-                justifySelf: "center",
-                padding: "1rem",
-                minWidth: 180,
-                borderRadius: "1.25rem",
-                background: "#ffe9b5",
-                boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.05)",
-                textAlign: "center",
-                transform:
-                  phase === 1 || phase === 3 || phase === 4
-                    ? "scale(1.03)"
-                    : "scale(1)",
-                transition: "transform 0.25s ease",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: "0.8rem",
-                  fontWeight: 600,
-                  color: "#8b5e00",
-                  marginBottom: "0.25rem",
-                }}
-              >
-                Inventory
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "center",
-                  alignItems: "flex-end",
-                  gap: "0.25rem",
-                }}
-              >
-                <span style={{ fontSize: "2rem" }}>
+            <div className={`pv-inventory${phase === 1 || phase === 3 || phase === 4 ? " pv-inventory--active" : ""}`}>
+              <div className="pv-inventory-label">Inventory</div>
+              <div className="pv-inventory-value">
+                <span className="pv-inventory-icon">
                   {isOverstocked ? "🏭" : "🍺"}
                 </span>
-                <span
-                  style={{
-                    fontSize: "2rem",
-                    fontWeight: 700,
-                    color: "#5a3a00",
-                  }}
-                >
+                <span className="pv-inventory-number">
                   {Math.round(displayInventory)}
                 </span>
               </div>
-              <div
-                style={{
-                  marginTop: "0.25rem",
-                  display: "flex",
-                  justifyContent: "center",
-                  alignItems: "center",
-                  gap: "0.35rem",
-                  fontSize: "0.8rem",
-                  color: "#a02020",
-                  visibility: hasBacklog ? "visible" : "hidden",
-                }}
-              >
-                <span style={{ fontSize: "1.4rem" }}>😡</span>
+              <div className="pv-backlog-row" style={{ visibility: hasBacklog ? "visible" : "hidden" }}>
+                <span className="pv-backlog-icon">😡</span>
                 <span>Backlog: {Math.round(displayBacklog)}</span>
               </div>
-
-              <div
-                style={{
-                  marginTop: "0.4rem",
-                  fontSize: "0.8rem",
-                  color: "#7a5a1f",
-                }}
-              >
+              <div className="pv-inventory-costs">
                 <div>Inventory cost: ${displayInvCost.toFixed(2)}</div>
                 <div>Backlog cost: ${displayBacklogCost.toFixed(2)}</div>
               </div>
             </div>
 
             {/* RIGHT COLUMN: incoming pipeline */}
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: "0.15rem",
-                width: "100%",
-              }}
-            >
-              <span
-                style={{
-                  fontSize: "0.7rem",
-                  color: "#8b5e00",
-                  fontWeight: 600,
-                }}
-              >
+            <div className="pv-pipeline-col">
+              <span className="pv-pipeline-title">
                 {isFactory ? "Production pipeline" : "Incoming shipments"}
               </span>
-
               {isFactory ? (
-                <span
-                  style={{
-                    fontSize: "0.65rem",
-                    color: "#8b5e00",
-                  }}
-                >
-                  from your own brewery
-                </span>
+                <span className="pv-pipeline-subtitle">from your own brewery</span>
               ) : (
                 incomingPartner && (
-                  <span
-                    style={{
-                      fontSize: "0.65rem",
-                      color: "#8b5e00",
-                    }}
-                  >
-                    {incomingPartner}
-                  </span>
+                  <span className="pv-pipeline-subtitle">{incomingPartner}</span>
                 )
               )}
-
-              <div
-                style={{
-                  display: "flex",
-                  gap: "0.5rem",
-                  alignItems: "center",
-                  marginTop: "0.2rem",
-                }}
-              >
-                <DelayBox
-                  label="Delay 1"
-                  value={displayInDelay1}
-                  highlight={phase === 1 || phase === 3}
-                />
-                <span style={{ fontSize: "1.4rem" }}>⬅️</span>
-                <DelayBox
-                  label="Delay 2"
-                  value={displayInDelay2}
-                  highlight={phase === 1 || phase === 3}
-                />
+              <div className="pv-pipeline-delays">
+                <DelayBox label="Delay 1" value={displayInDelay1} highlight={phase === 1 || phase === 3} />
+                <span className="pv-pipeline-arrow">⬅️</span>
+                <DelayBox label="Delay 2" value={displayInDelay2} highlight={phase === 1 || phase === 3} />
               </div>
-
-              {/* Keep lane space reserved to avoid board height jumps */}
-              <TruckLane
-                progress={truckProgress}
-                visible={truckPhase === "receiving"}
-              />
+              <TruckLane progress={truckProgress} visible={truckPhase === "receiving"} />
             </div>
           </div>
 
           {showUpstreamBackorders && partnerUpstream && (
-            <div
-              style={{
-                marginLeft: "auto",
-                width: boardColumnWidth,
-                padding: "0.75rem",
-                borderRadius: "0.75rem",
-                background: "#fff2f0",
-                border: "1px solid #f3b4ad",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: "0.8rem",
-                  fontWeight: 600,
-                  color: "#8b5e00",
-                  marginBottom: "0.25rem",
-                }}
-              >
+            <div className="pv-upstream-backorder">
+              <div className="pv-upstream-backorder-title">
                 Units on backorder with your{" "}
                 {upstreamPartnerName ? upstreamPartnerName : "supplier"}
               </div>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "baseline",
-                  gap: "0.35rem",
-                }}
-              >
-                <span
-                  style={{
-                    fontSize: "2rem",
-                    fontWeight: 700,
-                    color: "#a02020",
-                  }}
-                >
-                  {upstreamBacklog}
-                </span>
-                <span style={{ color: "#7a5a1f", fontSize: "0.9rem" }}>
-                  units
-                </span>
+              <div className="pv-upstream-backorder-value">
+                <span className="pv-upstream-backorder-number">{upstreamBacklog}</span>
+                <span className="pv-upstream-backorder-unit">units</span>
               </div>
-              <div
-                style={{
-                  fontSize: "0.85rem",
-                  color: "#7a5a1f",
-                  marginTop: "0.35rem",
-                }}
-              >
+              <div className="pv-upstream-backorder-note">
                 Your upstream partner is currently behind on fulfilling shipments.
               </div>
             </div>
@@ -1375,19 +979,9 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
         </section>
       </main>
 
-      {/* Bottom blinking banner — always reserve space to avoid layout shift */}
       <div
-        style={{
-          maxWidth: 960,
-          margin: "1rem auto 0",
-          textAlign: "center",
-          fontSize: "0.95rem",
-          fontWeight: 600,
-          color: "#8b5e00",
-          opacity: bannerText ? (blinkOn ? 1 : 0.25) : 0,
-          transition: "opacity 0.3s ease",
-          minHeight: "1.5em",
-        }}
+        className="pv-banner"
+        style={{ opacity: bannerText ? (blinkOn ? 1 : 0.25) : 0 }}
       >
         {bannerText || "\u00A0"}
       </div>
@@ -1455,48 +1049,11 @@ interface DelayBoxProps {
 }
 
 const DelayBox: React.FC<DelayBoxProps> = ({ label, value, highlight }) => (
-  <div
-    style={{
-      width: 70,
-      height: 70,
-      borderRadius: "0.85rem",
-      border: "1px solid #ecd9aa",
-      background: "#fff",
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
-      justifyContent: "center",
-      transform: highlight ? "scale(1.05)" : "scale(1)",
-      boxShadow: highlight ? "0 0 6px rgba(139,94,0,0.35)" : "none",
-      transition: "transform 0.25s ease, box-shadow 0.25s ease",
-    }}
-  >
-    <div
-      style={{
-        fontSize: "0.65rem",
-        color: "#8b5e00",
-        marginBottom: "0.1rem",
-      }}
-    >
-      {label}
-    </div>
-    <div
-      style={{
-        display: "flex",
-        alignItems: "flex-end",
-        gap: "0.15rem",
-      }}
-    >
-      <span style={{ fontSize: "1.2rem" }}>🍺</span>
-      <span
-        style={{
-          fontSize: "1.2rem",
-          fontWeight: 600,
-          color: "#5a3a00",
-        }}
-      >
-        {value}
-      </span>
+  <div className={`pv-delay-box${highlight ? " pv-delay-box--highlight" : ""}`}>
+    <div className="pv-delay-box-label">{label}</div>
+    <div className="pv-delay-box-value">
+      <span className="pv-delay-box-icon">🍺</span>
+      <span className="pv-delay-box-number">{value}</span>
     </div>
   </div>
 );
@@ -1508,40 +1065,9 @@ interface PostItProps {
 }
 
 const PostIt: React.FC<PostItProps> = ({ label, value, hidden }) => (
-  <div
-    style={{
-      position: "relative",
-      width: "100%",
-      height: 70,
-      borderRadius: "0.75rem",
-      background: "#ffe777",
-      boxShadow: "0 2px 3px rgba(0,0,0,0.15)",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      transition: "transform 0.35s ease",
-    }}
-  >
-    <div
-      style={{
-        position: "absolute",
-        top: 4,
-        left: 8,
-        fontSize: "0.6rem",
-        color: "#6b4c00",
-      }}
-    >
-      {label}
-    </div>
-    <div
-      style={{
-        fontSize: "1.5rem",
-        fontWeight: 700,
-        color: "#6b4c00",
-      }}
-    >
-      {hidden ? "❓" : value}
-    </div>
+  <div className="pv-postit">
+    <div className="pv-postit-label">{label}</div>
+    <div className="pv-postit-value">{hidden ? "❓" : value}</div>
   </div>
 );
 
@@ -1580,82 +1106,21 @@ const OverlayCard: React.FC<OverlayCardProps> = ({
   };
 
   return (
-    <div
-      ref={overlayRef}
-      tabIndex={-1}
-      onKeyDown={handleKeyDown}
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.35)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: "1rem",
-        zIndex: 1000,
-        outline: "none",
-      }}
-    >
-      <div
-        style={{
-          minWidth: 280,
-          maxWidth: 420,
-          background: "#fffaf0",
-          border: "1px solid #e2cfa0",
-          borderRadius: "0.75rem",
-          boxShadow: "0 8px 20px rgba(0,0,0,0.2)",
-          padding: "1rem",
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: "0.5rem",
-            gap: "0.5rem",
-          }}
-        >
-          <h3 style={{ margin: 0, color: "#5a3a00" }}>{title}</h3>
+    <div ref={overlayRef} tabIndex={-1} onKeyDown={handleKeyDown} className="pv-overlay">
+      <div className="pv-overlay-card">
+        <div className="pv-overlay-header">
+          <h3 className="pv-overlay-title">{title}</h3>
           {onClose && (
-            <button
-              onClick={onClose}
-              style={{
-                border: "1px solid #d6c094",
-                borderRadius: "0.5rem",
-                background: "#fff7e0",
-                padding: "0.25rem 0.5rem",
-                cursor: "pointer",
-              }}
-            >
-              Close
-            </button>
+            <button onClick={onClose} className="pv-overlay-close">Close</button>
           )}
         </div>
-        <div style={{ color: "#4a3513", fontSize: "0.95rem" }}>{children}</div>
-        <div
-          style={{
-            marginTop: "0.75rem",
-            display: "flex",
-            gap: "0.5rem",
-            justifyContent: "flex-end",
-            flexWrap: "wrap",
-          }}
-        >
+        <div className="pv-overlay-body">{children}</div>
+        <div className="pv-overlay-actions">
           {actions.map((action) => (
             <button
               key={action.label}
               onClick={action.onClick}
-              style={{
-                padding: "0.4rem 0.75rem",
-                borderRadius: "0.6rem",
-                border: "1px solid #d6c094",
-                background:
-                  action.variant === "primary" ? "#f0a500" : "#fff7e0",
-                color: action.variant === "primary" ? "#fff" : "#5a3a00",
-                fontWeight: 600,
-                cursor: "pointer",
-              }}
+              className={`pv-overlay-btn${action.variant === "primary" ? " pv-overlay-btn--primary" : ""}`}
             >
               {action.label}
             </button>
@@ -1676,25 +1141,10 @@ interface TruckLaneProps {
  * across the lane over 2 seconds (driven by progress).
  */
 const TruckLane: React.FC<TruckLaneProps> = ({ progress, visible = true }) => (
-  <div
-    style={{
-      marginTop: "0.4rem",
-      width: "100%",
-      height: 24,
-      position: "relative",
-      overflow: "hidden",
-    }}
-  >
+  <div className="pv-truck-lane">
     <span
-      style={{
-        position: "absolute",
-        bottom: 0,
-        // Move from right (100%) to left (0%)
-        left: `${(1 - progress) * 80}%`,
-        fontSize: "1.4rem",
-        transition: "none",
-        opacity: visible ? 1 : 0,
-      }}
+      className="pv-truck-lane-emoji"
+      style={{ left: `${(1 - progress) * 80}%`, opacity: visible ? 1 : 0 }}
     >
       🚚
     </span>

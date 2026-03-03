@@ -288,16 +288,7 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {view === "player" && (
-          <div className="dashboard-stack">
-            <div>
-              <button className="btn-subtle" onClick={() => setView("home")}>
-                Back
-              </button>
-            </div>
-            <PlayerView />
-          </div>
-        )}
+        {view === "player" && <PlayerView />}
       </div>
     </div>
   );
