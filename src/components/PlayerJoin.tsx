@@ -44,7 +44,7 @@ const PlayerJoin: React.FC<PlayerJoinProps> = ({ onJoined }) => {
       sessionStorage.setItem(PLAYER_TOKEN_KEY, payload.sessionToken);
       onJoined();
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       const fbErr = err as FirebaseError;
       const code = fbErr?.code ?? "";
       if (fbErr?.message?.includes("NAME_TAKEN") || code.includes("already-exists")) {

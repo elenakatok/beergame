@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
+import { collection, limit, onSnapshot, orderBy, query } from "firebase/firestore";
 import { db } from "../firebase";
 import { adminReviewInstructor, adminRevokeInstructor } from "../api";
 import { InstructorProfile, InstructorStatus } from "../types/auth";
@@ -24,7 +24,7 @@ const AdminDashboard: React.FC = () => {
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
 
   React.useEffect(() => {
-    const q = query(collection(db, "instructors"), orderBy("createdAt", "desc"));
+    const q = query(collection(db, "instructors"), orderBy("createdAt", "desc"), limit(100));
     const unsub = onSnapshot(
       q,
       (snap) => {
@@ -39,7 +39,7 @@ const AdminDashboard: React.FC = () => {
         setLoading(false);
       },
       (err) => {
-        console.error(err);
+        if (import.meta.env.DEV) console.error(err);
         setAlert({ tone: "error", message: "Failed to load instructors." });
         setLoading(false);
       }
@@ -66,7 +66,7 @@ const AdminDashboard: React.FC = () => {
         message: `Application ${decision === "approve" ? "approved" : "rejected"} successfully.`,
       });
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       setAlert({ tone: "error", message: "Unable to update application status." });
     } finally {
       setBusyUid(null);
@@ -88,7 +88,7 @@ const AdminDashboard: React.FC = () => {
       await adminRevokeInstructor({ instructorUid: uid });
       setAlert({ tone: "success", message: "Instructor access revoked." });
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       setAlert({ tone: "error", message: "Unable to revoke instructor." });
     } finally {
       setBusyUid(null);

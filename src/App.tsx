@@ -6,7 +6,7 @@ import PlayerJoin from "./components/PlayerJoin";
 import PlayerView from "./components/PlayerView";
 import AuthPortal from "./components/AuthPortal";
 import AdminDashboard from "./components/AdminDashboard";
-import titleBg from "./beergametitle.png";
+import titleBg from "./beergametitle.webp";
 import { auth, db } from "./firebase";
 import { ensureAdminProfile } from "./api";
 import { InstructorProfile } from "./types/auth";
@@ -23,6 +23,7 @@ const App: React.FC = () => {
   const [authLoading, setAuthLoading] = useState(true);
   const [profile, setProfile] = useState<InstructorProfile | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (nextUser) => {
@@ -46,7 +47,8 @@ const App: React.FC = () => {
     let cancelled = false;
 
     ensureAdminProfile().catch((err) => {
-      console.error("ensureAdminProfile failed", err);
+      if (import.meta.env.DEV) console.error("ensureAdminProfile failed", err);
+      if (!cancelled) setProfileError("Failed to initialize instructor profile. Please reload the page.");
     });
 
     const ref = doc(db, "instructors", user.uid);
@@ -65,7 +67,7 @@ const App: React.FC = () => {
         setProfileLoading(false);
       },
       (err) => {
-        console.error(err);
+        if (import.meta.env.DEV) console.error(err);
         if (!cancelled) {
           setProfile(null);
           setProfileLoading(false);
@@ -86,6 +88,14 @@ const App: React.FC = () => {
   const authSection = useMemo(() => {
     if (authLoading || profileLoading) {
       return <div className="panel">Loading account...</div>;
+    }
+
+    if (profileError) {
+      return (
+        <div className="panel">
+          <p style={{ color: "#b91c1c" }}>{profileError}</p>
+        </div>
+      );
     }
 
     if (!user) {
@@ -186,6 +196,7 @@ const App: React.FC = () => {
     isAdmin,
     isApproved,
     profile,
+    profileError,
     profileLoading,
     user,
   ]);

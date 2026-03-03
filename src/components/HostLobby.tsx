@@ -4,6 +4,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   onSnapshot,
   orderBy,
   query,
@@ -33,7 +34,7 @@ import { downloadSessionCsvBundle } from "../utils/sessionCsvExport";
 import { exportElementToPdf } from "../utils/exportPdf";
 
 const HOST_GAME_CODE_KEY = "beerGame_host_gameCode";
-const ONLINE_THRESHOLD_MS = 30_000;
+const ONLINE_THRESHOLD_MS = 90_000;
 
 interface Props {
   userUid: string;
@@ -76,6 +77,7 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
   const [pdfExporting, setPdfExporting] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
   const advancingTeamsRef = useRef<Set<string>>(new Set());
+  const autoAdvanceTimerRef = useRef<number | null>(null);
   const reportRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -88,7 +90,7 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
   useEffect(() => {
     const gamesRef = collection(db, "games");
     const q = isAdmin
-      ? query(gamesRef, orderBy("createdAt", "desc"))
+      ? query(gamesRef, orderBy("createdAt", "desc"), limit(50))
       : query(gamesRef, where("ownerInstructorId", "==", userUid), orderBy("createdAt", "desc"));
     return onSnapshot(
       q,
@@ -109,7 +111,7 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
         );
       },
       (err) => {
-        console.error(err);
+        if (import.meta.env.DEV) console.error(err);
         setFeedback({ tone: "error", message: "Failed to load sessions." });
       }
     );
@@ -184,10 +186,7 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
         if (!allSubmitted || advancingTeamsRef.current.has(team.id)) continue;
         try {
           advancingTeamsRef.current.add(team.id);
-          const liveCfg = {
-            ...config,
-            customerDemand: Array.from({ length: config.nWeeks }, (_, i) => (i < 4 ? 4 : 8)),
-          };
+          const liveCfg = config;
           const orders = computeOrdersForWeek(team, liveCfg, team.pendingOrders || {});
           const { nextTeam } = simulateWeek(team, liveCfg, orders);
           nextTeam.pendingOrders = {};
@@ -201,7 +200,19 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
         }
       }
     };
-    void run();
+    if (autoAdvanceTimerRef.current !== null) {
+      window.clearTimeout(autoAdvanceTimerRef.current);
+    }
+    autoAdvanceTimerRef.current = window.setTimeout(() => {
+      autoAdvanceTimerRef.current = null;
+      void run();
+    }, 300);
+    return () => {
+      if (autoAdvanceTimerRef.current !== null) {
+        window.clearTimeout(autoAdvanceTimerRef.current);
+        autoAdvanceTimerRef.current = null;
+      }
+    };
   }, [gameCode, config, gameStatus, teams]);
 
   const sanitizeConfig = (cfg: GameConfig): GameConfig => {
@@ -211,7 +222,9 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
       nWeeks,
       inventoryCost: Math.max(0, Number(cfg.inventoryCost) || 0),
       backlogCost: Math.max(0, Number(cfg.backlogCost) || 0),
-      customerDemand: Array.from({ length: nWeeks }, (_, i) => (i < 4 ? 4 : 8)),
+      customerDemand: Array.isArray(cfg.customerDemand) && cfg.customerDemand.length === nWeeks
+        ? cfg.customerDemand
+        : Array.from({ length: nWeeks }, (_, i) => cfg.customerDemand?.[i] ?? (i < 4 ? 4 : 8)),
       extraOrderDelay: Boolean(cfg.extraOrderDelay),
       displayUpstreamBackorders: Boolean(cfg.displayUpstreamBackorders),
     };
@@ -224,7 +237,7 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
       localStorage.setItem(HOST_GAME_CODE_KEY, created.gameCode);
       setFeedback({ tone: "success", message: `Session ${created.gameCode} created.` });
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       setFeedback({ tone: "error", message: "Failed to create session." });
     }
   };
@@ -247,7 +260,7 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
       await batch.commit();
       setFeedback({ tone: "success", message: "Player removed from lobby." });
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       setFeedback({ tone: "error", message: "Unable to remove player." });
     }
   };
@@ -261,7 +274,7 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
       setSavedNotes(notes);
       setFeedback({ tone: "success", message: "Session settings saved." });
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       setFeedback({ tone: "error", message: "Unable to save session settings." });
     }
   };
@@ -328,7 +341,7 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
       await batch.commit();
       setFeedback({ tone: "success", message: "Game started successfully." });
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       setFeedback({ tone: "error", message: "Unable to start game." });
     }
   };
@@ -339,7 +352,7 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
       await updateDoc(doc(db, "games", gameCode), { status: "ended" });
       setFeedback({ tone: "success", message: `Session ${gameCode} marked as ended.` });
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       setFeedback({ tone: "error", message: "Unable to end session." });
     }
   };
@@ -360,7 +373,7 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
       }
       setFeedback({ tone: "success", message: `Session ${code} deleted.` });
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       setFeedback({ tone: "error", message: `Unable to delete session ${code}.` });
     }
   };
@@ -418,7 +431,7 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
         message: `${roleLabel} was switched to Beer GPT for team ${team.name}.`,
       });
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       setFeedback({
         tone: "error",
         message: "Unable to kick player to robot. Please try again.",
@@ -529,7 +542,7 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
 
       setFeedback({ tone: "success", message: "Session data downloaded." });
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       setFeedback({ tone: "error", message: "Unable to download session data." });
     } finally {
       setCsvExporting(false);
@@ -546,7 +559,7 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
       });
       setFeedback({ tone: "success", message: "PDF report exported." });
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       setFeedback({ tone: "error", message: "Unable to export PDF report." });
     } finally {
       setPdfExporting(false);

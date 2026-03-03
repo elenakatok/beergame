@@ -4,15 +4,17 @@ import { db } from "../firebase";
 import { doc, onSnapshot } from "firebase/firestore";
 import { GameConfig, Role, TeamState, ROLES } from "../logic/gameModel";
 import { heartbeatPlayer, submitPlayerOrder } from "../api";
-import waitingBg from "../waitingscreen.png";
+import waitingBg from "../waitingscreen.webp";
 import TeamOrdersLineChart from "./charts/TeamOrdersLineChart";
 
 const PLAYER_GAME_CODE_KEY = "beerGame_player_gameCode";
 const PLAYER_ID_KEY = "beerGame_player_playerId";
 const PLAYER_ROLE_KEY = "beerGame_player_role";
 const PLAYER_TOKEN_KEY = "beerGame_player_sessionToken";
-const HEARTBEAT_INTERVAL_MS = 10_000;
+const HEARTBEAT_INTERVAL_MS = 30_000;
 const HEARTBEAT_FAILURE_DISCONNECT_COUNT = 3;
+const MAX_ORDER_AMOUNT = 50;
+const OVERSTOCK_THRESHOLD = 40;
 
 interface PlayerData {
   id: string;
@@ -43,8 +45,10 @@ const PlayerView: React.FC = () => {
   const sessionToken = storedSession.sessionToken;
   const [heartbeatFailureCount, setHeartbeatFailureCount] = useState(0);
   const [browserOnline, setBrowserOnline] = useState<boolean>(navigator.onLine);
+  const [orderSubmitFailed, setOrderSubmitFailed] = useState(false);
+  const [orderError, setOrderError] = useState<string | null>(null);
   const isDisconnected =
-    !browserOnline || heartbeatFailureCount >= HEARTBEAT_FAILURE_DISCONNECT_COUNT;
+    !browserOnline || heartbeatFailureCount >= HEARTBEAT_FAILURE_DISCONNECT_COUNT || orderSubmitFailed;
 
   // Game subscription
   useEffect(() => {
@@ -119,6 +123,7 @@ const PlayerView: React.FC = () => {
 
   useEffect(() => {
     if (!gameCode || !playerId || !sessionToken) return;
+    if (gameStatus && gameStatus !== "lobby") return;
 
     let cancelled = false;
     const ping = async () => {
@@ -128,7 +133,7 @@ const PlayerView: React.FC = () => {
           setHeartbeatFailureCount(0);
         }
       } catch (err) {
-        console.error("heartbeat failed", err);
+        if (import.meta.env.DEV) console.error("heartbeat failed", err);
         if (!cancelled) {
           setHeartbeatFailureCount((prev) => prev + 1);
         }
@@ -141,7 +146,7 @@ const PlayerView: React.FC = () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [gameCode, playerId, sessionToken]);
+  }, [gameCode, playerId, sessionToken, gameStatus]);
 
   const handleSubmitOrder = async (order: number) => {
     if (!gameCode || !playerId || !sessionToken || !player?.teamId || !player.role) return;
@@ -151,13 +156,20 @@ const PlayerView: React.FC = () => {
       return; // already submitted
     }
 
-    await submitPlayerOrder({
-      gameCode,
-      playerId,
-      sessionToken,
-      order,
-    });
-    setHeartbeatFailureCount(0);
+    try {
+      await submitPlayerOrder({
+        gameCode,
+        playerId,
+        sessionToken,
+        order,
+      });
+      setHeartbeatFailureCount(0);
+      setOrderSubmitFailed(false);
+      setOrderError(null);
+    } catch {
+      setOrderSubmitFailed(true);
+      setOrderError("Order failed to submit. Check your connection and try again.");
+    }
   };
 
   if (error) {
@@ -282,6 +294,7 @@ const PlayerView: React.FC = () => {
       orderAlreadySubmitted={myOrderSubmitted}
       connectionHealthy={!isDisconnected}
       showDisconnectOverlay={isDisconnected}
+      orderError={orderError}
     />
   );
 };
@@ -295,6 +308,7 @@ interface PlayerBoardProps {
   orderAlreadySubmitted: boolean;
   connectionHealthy: boolean;
   showDisconnectOverlay: boolean;
+  orderError?: string | null;
 }
 
 const PlayerBoard: React.FC<PlayerBoardProps> = ({
@@ -306,6 +320,7 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
   orderAlreadySubmitted,
   connectionHealthy,
   showDisconnectOverlay,
+  orderError,
 }) => {
   const me = team.stages[role];
   const week = team.currentWeek;
@@ -599,7 +614,7 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
     setTruckPhase(null);
     setTruckProgress(0);
 
-    const phaseDuration = 2000; // ~2 seconds per main step
+    const phaseDuration = 1200; // ~1.2 seconds per main step
     const handles: number[] = [];
 
     const schedulePhase = (p: Phase, index: number) => {
@@ -741,7 +756,7 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
       return;
     }
 
-    if (normalized > 50) {
+    if (normalized > MAX_ORDER_AMOUNT) {
       setPendingHighOrder(normalized);
       return;
     }
@@ -789,9 +804,11 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
     !!config.displayUpstreamBackorders && upstreamBacklog > 0;
 
   const hasBacklog = displayBacklog > 0;
-  const isOverstocked = displayInventory > 40;
+  const isOverstocked = displayInventory > OVERSTOCK_THRESHOLD;
   const boardColumnsTemplate = "repeat(3, minmax(0, 1fr))";
   const boardColumnWidth = "calc((100% - 1.5rem) / 3)";
+  const hasValidOrder = orderInput.trim() !== "" && !Number.isNaN(Number(orderInput));
+  const submitDisabled = orderAlreadySubmitted || !canOrder || !connectionHealthy || !hasValidOrder;
 
   // Banner text per phase
   let bannerText: string | null = null;
@@ -950,6 +967,7 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
             flexDirection: "column",
             gap: "0.75rem",
             alignItems: "stretch",
+            minHeight: 340,
           }}
           >
             {/* Top row: orders */}
@@ -1054,7 +1072,7 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
               />
               <button
                 onClick={handleSubmit}
-                disabled={orderAlreadySubmitted || !canOrder || !connectionHealthy}
+                disabled={submitDisabled}
                 style={{
                   width: "100%",
                   padding: "0.35rem 0.45rem",
@@ -1063,12 +1081,10 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
                   boxSizing: "border-box",
                   fontSize: "0.84rem",
                   lineHeight: 1.2,
-                  background:
-                    orderAlreadySubmitted || !canOrder || !connectionHealthy ? "#ccc" : "#f0a500",
+                  background: submitDisabled ? "#ccc" : "#f0a500",
                   color: "#fff",
                   fontWeight: 600,
-                  cursor:
-                    orderAlreadySubmitted || !canOrder || !connectionHealthy ? "default" : "pointer",
+                  cursor: submitDisabled ? "default" : "pointer",
                   display: "block",
                 }}
               >
@@ -1204,22 +1220,21 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
                   {Math.round(displayInventory)}
                 </span>
               </div>
-              {hasBacklog && (
-                <div
-                  style={{
-                    marginTop: "0.25rem",
-                    display: "flex",
-                    justifyContent: "center",
-                    alignItems: "center",
-                    gap: "0.35rem",
-                    fontSize: "0.8rem",
-                    color: "#a02020",
-                  }}
-                >
-                  <span style={{ fontSize: "1.4rem" }}>😡</span>
-                  <span>Backlog: {Math.round(displayBacklog)}</span>
-                </div>
-              )}
+              <div
+                style={{
+                  marginTop: "0.25rem",
+                  display: "flex",
+                  justifyContent: "center",
+                  alignItems: "center",
+                  gap: "0.35rem",
+                  fontSize: "0.8rem",
+                  color: "#a02020",
+                  visibility: hasBacklog ? "visible" : "hidden",
+                }}
+              >
+                <span style={{ fontSize: "1.4rem" }}>😡</span>
+                <span>Backlog: {Math.round(displayBacklog)}</span>
+              </div>
 
               <div
                 style={{
@@ -1360,30 +1375,29 @@ const PlayerBoard: React.FC<PlayerBoardProps> = ({
         </section>
       </main>
 
-      {/* Bottom blinking banner */}
-      {bannerText && (
-        <div
-          style={{
-            maxWidth: 960,
-            margin: "1rem auto 0",
-            textAlign: "center",
-            fontSize: "0.95rem",
-            fontWeight: 600,
-            color: "#8b5e00",
-            opacity: blinkOn ? 1 : 0.25,
-            transition: "opacity 0.3s ease",
-          }}
-        >
-          {bannerText}
-        </div>
-      )}
+      {/* Bottom blinking banner — always reserve space to avoid layout shift */}
+      <div
+        style={{
+          maxWidth: 960,
+          margin: "1rem auto 0",
+          textAlign: "center",
+          fontSize: "0.95rem",
+          fontWeight: 600,
+          color: "#8b5e00",
+          opacity: bannerText ? (blinkOn ? 1 : 0.25) : 0,
+          transition: "opacity 0.3s ease",
+          minHeight: "1.5em",
+        }}
+      >
+        {bannerText || "\u00A0"}
+      </div>
 
       {showDisconnectOverlay && (
         <OverlayCard
           title="Connection lost"
           actions={[]}
         >
-          Your connection to Firebase appears offline. Reconnect to continue and submit orders.
+          {orderError || "Your connection to Firebase appears offline. Reconnect to continue and submit orders."}
         </OverlayCard>
       )}
 
@@ -1549,87 +1563,108 @@ const OverlayCard: React.FC<OverlayCardProps> = ({
   onClose,
   actions,
   children,
-}) => (
-  <div
-    style={{
-      position: "fixed",
-      inset: 0,
-      background: "rgba(0,0,0,0.35)",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      padding: "1rem",
-      zIndex: 1000,
-    }}
-  >
+}) => {
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    overlayRef.current?.focus();
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape" && onClose) {
+      onClose();
+    }
+  };
+
+  return (
     <div
+      ref={overlayRef}
+      tabIndex={-1}
+      onKeyDown={handleKeyDown}
       style={{
-        minWidth: 280,
-        maxWidth: 420,
-        background: "#fffaf0",
-        border: "1px solid #e2cfa0",
-        borderRadius: "0.75rem",
-        boxShadow: "0 8px 20px rgba(0,0,0,0.2)",
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.35)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
         padding: "1rem",
+        zIndex: 1000,
+        outline: "none",
       }}
     >
       <div
         style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: "0.5rem",
-          gap: "0.5rem",
+          minWidth: 280,
+          maxWidth: 420,
+          background: "#fffaf0",
+          border: "1px solid #e2cfa0",
+          borderRadius: "0.75rem",
+          boxShadow: "0 8px 20px rgba(0,0,0,0.2)",
+          padding: "1rem",
         }}
       >
-        <h3 style={{ margin: 0, color: "#5a3a00" }}>{title}</h3>
-        {onClose && (
-          <button
-            onClick={onClose}
-            style={{
-              border: "1px solid #d6c094",
-              borderRadius: "0.5rem",
-              background: "#fff7e0",
-              padding: "0.25rem 0.5rem",
-              cursor: "pointer",
-            }}
-          >
-            Close
-          </button>
-        )}
-      </div>
-      <div style={{ color: "#4a3513", fontSize: "0.95rem" }}>{children}</div>
-      <div
-        style={{
-          marginTop: "0.75rem",
-          display: "flex",
-          gap: "0.5rem",
-          justifyContent: "flex-end",
-          flexWrap: "wrap",
-        }}
-      >
-        {actions.map((action) => (
-          <button
-            key={action.label}
-            onClick={action.onClick}
-            style={{
-              padding: "0.4rem 0.75rem",
-              borderRadius: "0.6rem",
-              border: "1px solid #d6c094",
-              background:
-                action.variant === "primary" ? "#f0a500" : "#fff7e0",
-              color: action.variant === "primary" ? "#fff" : "#5a3a00",
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
-          >
-            {action.label}
-          </button>
-        ))}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: "0.5rem",
+            gap: "0.5rem",
+          }}
+        >
+          <h3 style={{ margin: 0, color: "#5a3a00" }}>{title}</h3>
+          {onClose && (
+            <button
+              onClick={onClose}
+              style={{
+                border: "1px solid #d6c094",
+                borderRadius: "0.5rem",
+                background: "#fff7e0",
+                padding: "0.25rem 0.5rem",
+                cursor: "pointer",
+              }}
+            >
+              Close
+            </button>
+          )}
+        </div>
+        <div style={{ color: "#4a3513", fontSize: "0.95rem" }}>{children}</div>
+        <div
+          style={{
+            marginTop: "0.75rem",
+            display: "flex",
+            gap: "0.5rem",
+            justifyContent: "flex-end",
+            flexWrap: "wrap",
+          }}
+        >
+          {actions.map((action) => (
+            <button
+              key={action.label}
+              onClick={action.onClick}
+              style={{
+                padding: "0.4rem 0.75rem",
+                borderRadius: "0.6rem",
+                border: "1px solid #d6c094",
+                background:
+                  action.variant === "primary" ? "#f0a500" : "#fff7e0",
+                color: action.variant === "primary" ? "#fff" : "#5a3a00",
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
       </div>
     </div>
-  </div>
-);
+  );
+};
 
 interface TruckLaneProps {
   progress: number; // 0 -> 1

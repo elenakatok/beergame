@@ -33,7 +33,7 @@ button {
   color: #1f3558;
   background-color: #ffffff;
   cursor: pointer;
-  min-height: 38px;
+  min-height: 44px;
   transition: border-color 0.2s, box-shadow 0.2s, transform 0.12s ease;
 }
 

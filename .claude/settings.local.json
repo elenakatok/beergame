@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "Bash(cd /c/Users/siems/games/beergame && npm run build 2>&1)",
+      "Bash(npx:*)"
+    ]
+  }
+}

@@ -98,7 +98,11 @@ const TeamOrdersLineChart: React.FC<TeamOrdersLineChartProps> = ({
           s.values.map((v, idx) => {
             const x = getX(idx);
             const y = getY(v);
-            return <circle key={`${s.role}-${idx}`} cx={x} cy={y} r={2} fill={ROLE_COLORS[s.role]} />;
+            return (
+              <circle key={`${s.role}-${idx}`} cx={x} cy={y} r={2} fill={ROLE_COLORS[s.role]}>
+                <title>{`${s.label} Week ${idx + 1}: ${v}`}</title>
+              </circle>
+            );
           })
         )}
       </svg>

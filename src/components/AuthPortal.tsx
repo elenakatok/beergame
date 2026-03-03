@@ -47,7 +47,7 @@ const AuthPortal: React.FC<AuthPortalProps> = ({ initialMode = "login" }) => {
       await signInWithEmailAndPassword(auth, email.trim(), password);
       setMessage("Signed in.");
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       setError("Unable to sign in. Check your email and password.");
     } finally {
       setLoading(false);
@@ -67,7 +67,7 @@ const AuthPortal: React.FC<AuthPortalProps> = ({ initialMode = "login" }) => {
       });
       setMessage("Application submitted. You can sign in while your status is pending review.");
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       setError("Unable to complete registration. Verify your details and try again.");
     } finally {
       setLoading(false);
@@ -82,7 +82,7 @@ const AuthPortal: React.FC<AuthPortalProps> = ({ initialMode = "login" }) => {
       await sendPasswordResetEmail(auth, email.trim());
       setMessage("Password reset email sent.");
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       setError("Unable to send reset email.");
     } finally {
       setLoading(false);
