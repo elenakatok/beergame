@@ -12,6 +12,7 @@ functions/node_modules
 functions/lib
 dist
 dist-ssr
+.firebase/
 *.local
 
 # Environment variables
