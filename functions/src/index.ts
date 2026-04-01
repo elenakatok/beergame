@@ -275,7 +275,7 @@ export const submitInstructorApplication = onCall(
     if (!isAdmin) {
       const appUrl = APP_BASE_URL.value();
       const emailText = [
-        "New instructor application received.",
+        "New Beer Game instructor application received.",
         `Name: ${name}`,
         `Email: ${user.email}`,
         `Institution: ${institution}`,
