@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Beer mug body -->
+  <rect x="10" y="18" width="32" height="38" rx="4" ry="4" fill="#F5A623"/>
+  <!-- Beer liquid -->
+  <rect x="14" y="22" width="24" height="30" rx="2" ry="2" fill="#FFCC02"/>
+  <!-- Foam bubbles -->
+  <ellipse cx="18" cy="18" rx="6" ry="5" fill="#FFF8E1"/>
+  <ellipse cx="30" cy="16" rx="7" ry="6" fill="#FFF8E1"/>
+  <ellipse cx="38" cy="19" rx="5" ry="4" fill="#FFF8E1"/>
+  <ellipse cx="24" cy="14" rx="5" ry="4" fill="#FFFDE7"/>
+  <!-- Handle -->
+  <path d="M42 24 h6 a6 6 0 0 1 0 12 h-6" fill="none" stroke="#F5A623" stroke-width="5" stroke-linecap="round"/>
+  <!-- Mug lines -->
+  <line x1="20" y1="28" x2="20" y2="46" stroke="#E09800" stroke-width="1.5" opacity="0.4"/>
+  <line x1="26" y1="28" x2="26" y2="46" stroke="#E09800" stroke-width="1.5" opacity="0.4"/>
+  <line x1="32" y1="28" x2="32" y2="46" stroke="#E09800" stroke-width="1.5" opacity="0.4"/>
+</svg>

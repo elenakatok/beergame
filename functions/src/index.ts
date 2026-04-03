@@ -780,7 +780,7 @@ export const submitPlayerOrder = onCall(async (request) => {
   return { ok: true };
 });
 
-export const cleanupExpiredSessions = onSchedule("every 1 hours", async () => {
+export const cleanupExpiredSessions = onSchedule("every monday 03:00", async () => {
   const now = admin.firestore.Timestamp.now();
   let deleted = 0;
 
