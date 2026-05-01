@@ -48,7 +48,7 @@ In [Firebase Console](https://console.firebase.google.com):
 2. Enable **Firestore Database**.
 3. Enable **Authentication** and turn on `Email/Password` sign-in.
 4. Add a **Web App** and copy firebase config values.
-5. Enable **App Check** for your web app and create a reCAPTCHA Enterprise key.
+5. Enable **App Check** for your web app and create a reCAPTCHA v3 site key.
 
 Notes:
 
@@ -67,7 +67,7 @@ VITE_FIREBASE_STORAGE_BUCKET=your_storage_bucket
 VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
 VITE_FIREBASE_APP_ID=your_app_id
 VITE_FIREBASE_MEASUREMENT_ID=your_measurement_id
-VITE_APPCHECK_RECAPTCHA_SITE_KEY=your_recaptcha_enterprise_site_key
+VITE_RECAPTCHA_SITE_KEY=your_recaptcha_v3_site_key
 ```
 
 Do not commit `.env`.
@@ -172,6 +172,40 @@ cd ..
 npm run build
 firebase deploy
 ```
+
+## 13. Billing kill switch (recommended)
+
+A safety net against a runaway bill (compromised key, abuse, bug). When your monthly cost crosses a budget you set, GCP publishes to a Pub/Sub topic, the `billingKillSwitch` Cloud Function listens, and it detaches the billing account from the project — which immediately stops all paid services. The function is idempotent and ignores forecast-only alerts; it only fires on actual cost overruns.
+
+### One-time setup in GCP Console
+
+1. Enable APIs (one-time per project):
+   - **Cloud Billing API**
+   - **Cloud Pub/Sub API**
+2. Create a Pub/Sub topic named **`billing-kill-switch`** (Cloud Console → Pub/Sub → Topics → Create).
+3. Cloud Console → **Billing → Budgets & alerts → Create budget**:
+   - Scope it to this project.
+   - Set thresholds (e.g., 50%, 90%, 100% of monthly target).
+   - Under "Manage notifications" toggle **Connect a Pub/Sub topic to this budget** and select `billing-kill-switch`.
+4. Grant the Cloud Functions runtime service account permission to disable billing. By default that SA is `<PROJECT_ID>-compute@developer.gserviceaccount.com`. On the **billing account** (Billing → Account management → Permissions → Add principal) grant role **Billing Account Administrator** (`roles/billing.admin`) — or the narrower **Project Billing Manager** (`roles/billing.projectManager`) if you only want it to be able to detach billing from this one project. Without this role the function will fail with `PERMISSION_DENIED` and billing will stay on.
+5. Deploy the function:
+
+   ```bash
+   firebase deploy --only functions:billingKillSwitch
+   ```
+
+### Verify
+
+- From Cloud Console → Pub/Sub → `billing-kill-switch` → "Messages" tab → publish a test message with body `{"costAmount": 1, "budgetAmount": 100}`. Expected log: "Budget alert received but actual cost is within budget" — function exits without disabling.
+- Optionally, on a sandbox project only, publish `{"costAmount": 200, "budgetAmount": 100}` and confirm billing is disabled. **Do not run this test on your live project unless you intend to manually re-enable billing afterward** (Billing → Account management → Link a billing account).
+
+### Re-enabling after a real fire
+
+If the kill switch fires on production, the project is salvageable:
+
+1. Investigate the cause in Cloud Logging (`severity=ERROR`).
+2. Cloud Console → Billing → Account management → **Link a billing account** to re-attach billing.
+3. Functions, Firestore, and Hosting resume on the next request — no redeploy needed.
 
 ## Troubleshooting
 

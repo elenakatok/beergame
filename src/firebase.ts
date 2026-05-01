@@ -2,7 +2,7 @@
 // src/firebase.ts
 import { initializeApp } from "firebase/app";
 import { getFirestore, setLogLevel } from "firebase/firestore";
-import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "firebase/app-check";
+import { initializeAppCheck, ReCaptchaV3Provider } from "firebase/app-check";
 import { getAuth } from "firebase/auth";
 import { getFunctions } from "firebase/functions";
 
@@ -45,14 +45,15 @@ if (missingKeys.length > 0) {
 const app = initializeApp(firebaseConfig);
 
 if (import.meta.env.DEV) {
+  const debugToken = import.meta.env.VITE_APPCHECK_DEBUG_TOKEN;
   // @ts-expect-error - runtime-only debug token on `self` for App Check (not present in TypeScript DOM types)
-  self.FIREBASE_APPCHECK_DEBUG_TOKEN = true;
+  self.FIREBASE_APPCHECK_DEBUG_TOKEN = debugToken && debugToken.length > 0 ? debugToken : true;
 }
 
 // Initialize App Check without assigning the returned value to avoid unused variable.
 initializeAppCheck(app, {
-  provider: new ReCaptchaEnterpriseProvider(
-    import.meta.env.VITE_APPCHECK_RECAPTCHA_SITE_KEY
+  provider: new ReCaptchaV3Provider(
+    import.meta.env.VITE_RECAPTCHA_SITE_KEY
   ),
   isTokenAutoRefreshEnabled: true,
 });

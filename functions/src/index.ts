@@ -1,9 +1,11 @@
 import * as crypto from "crypto";
 import * as admin from "firebase-admin";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
+import { onMessagePublished } from "firebase-functions/v2/pubsub";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { defineSecret } from "firebase-functions/params";
 import * as logger from "firebase-functions/logger";
+import { CloudBillingClient } from "@google-cloud/billing";
 
 admin.initializeApp();
 
@@ -196,7 +198,7 @@ async function generateUniqueGameCode(): Promise<string> {
 }
 
 export const ensureAdminProfile = onCall(
-  { secrets: [ADMIN_EMAIL] },
+  { enforceAppCheck: true, secrets: [ADMIN_EMAIL] },
   async (request) => {
     const uid = requireAuthUid(request);
     const user = await admin.auth().getUser(uid);
@@ -232,7 +234,7 @@ export const ensureAdminProfile = onCall(
 );
 
 export const submitInstructorApplication = onCall(
-  { secrets: [ADMIN_EMAIL, SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
+  { enforceAppCheck: true, secrets: [ADMIN_EMAIL, SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
   async (request) => {
     const uid = requireAuthUid(request);
     const name = typeof request.data?.name === "string" ? request.data.name.trim() : "";
@@ -279,7 +281,7 @@ export const submitInstructorApplication = onCall(
 );
 
 export const syncEmailVerified = onCall(
-  { secrets: [ADMIN_EMAIL, SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
+  { enforceAppCheck: true, secrets: [ADMIN_EMAIL, SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
   async (request) => {
     const uid = requireAuthUid(request);
     const tokenVerified = Boolean(
@@ -328,7 +330,7 @@ export const syncEmailVerified = onCall(
 );
 
 export const adminReviewInstructor = onCall(
-  { secrets: [SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
+  { enforceAppCheck: true, secrets: [SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
   async (request) => {
     const reviewerUid = requireAuthUid(request);
     await requireAdmin(reviewerUid);
@@ -396,7 +398,7 @@ export const adminReviewInstructor = onCall(
 );
 
 export const adminRevokeInstructor = onCall(
-  { secrets: [SMTP2GO_API_KEY, MAIL_FROM] },
+  { enforceAppCheck: true, secrets: [SMTP2GO_API_KEY, MAIL_FROM] },
   async (request) => {
     const reviewerUid = requireAuthUid(request);
     await requireAdmin(reviewerUid);
@@ -441,7 +443,7 @@ export const adminRevokeInstructor = onCall(
   }
 );
 
-export const adminDeleteInstructor = onCall(async (request) => {
+export const adminDeleteInstructor = onCall({ enforceAppCheck: true }, async (request) => {
   const reviewerUid = requireAuthUid(request);
   await requireAdmin(reviewerUid);
 
@@ -482,7 +484,7 @@ export const adminDeleteInstructor = onCall(async (request) => {
   return { deleted: true };
 });
 
-export const createSession = onCall(async (request) => {
+export const createSession = onCall({ enforceAppCheck: true }, async (request) => {
   const uid = requireAuthUid(request);
   const instructorSnap = await requireApprovedInstructor(uid);
   const instructor = instructorSnap.data() as InstructorDoc;
@@ -515,7 +517,7 @@ export const createSession = onCall(async (request) => {
   return { gameCode: code };
 });
 
-export const deleteSession = onCall(async (request) => {
+export const deleteSession = onCall({ enforceAppCheck: true }, async (request) => {
   const uid = requireAuthUid(request);
   const instructorSnap = await requireApprovedInstructor(uid);
   const instructor = instructorSnap.data() as InstructorDoc;
@@ -539,7 +541,7 @@ export const deleteSession = onCall(async (request) => {
   return { deleted: true };
 });
 
-export const joinOrResumePlayer = onCall(async (request) => {
+export const joinOrResumePlayer = onCall({ enforceAppCheck: true }, async (request) => {
   const gameCode = parseGameCode(request.data?.gameCode);
   const rawName = typeof request.data?.name === "string" ? request.data.name : "";
   const name = rawName.trim();
@@ -787,7 +789,7 @@ async function validatePlayerToken(params: {
   };
 }
 
-export const heartbeatPlayer = onCall(async (request) => {
+export const heartbeatPlayer = onCall({ enforceAppCheck: true }, async (request) => {
   const gameCode = parseGameCode(request.data?.gameCode);
   const playerId = typeof request.data?.playerId === "string" ? request.data.playerId.trim() : "";
   const sessionToken =
@@ -805,7 +807,7 @@ export const heartbeatPlayer = onCall(async (request) => {
   return { ok: true, serverTime: Date.now() };
 });
 
-export const submitPlayerOrder = onCall(async (request) => {
+export const submitPlayerOrder = onCall({ enforceAppCheck: true }, async (request) => {
   const gameCode = parseGameCode(request.data?.gameCode);
   const playerId = typeof request.data?.playerId === "string" ? request.data.playerId.trim() : "";
   const sessionToken =
@@ -857,6 +859,78 @@ export const submitPlayerOrder = onCall(async (request) => {
 
   return { ok: true };
 });
+
+interface BudgetNotificationPayload {
+  costAmount?: number;
+  budgetAmount?: number;
+  alertThresholdExceeded?: number;
+  forecastThresholdExceeded?: number;
+  budgetDisplayName?: string;
+}
+
+export const billingKillSwitch = onMessagePublished(
+  "billing-kill-switch",
+  async (event) => {
+    const projectId = process.env.GCLOUD_PROJECT;
+    if (!projectId) {
+      logger.error("Kill-switch fired but GCLOUD_PROJECT is unset; aborting.");
+      return;
+    }
+
+    let payload: BudgetNotificationPayload = {};
+    const messageJson = event.data?.message?.json;
+    if (messageJson && typeof messageJson === "object") {
+      payload = messageJson as BudgetNotificationPayload;
+    } else {
+      const raw = event.data?.message?.data;
+      if (typeof raw === "string") {
+        try {
+          payload = JSON.parse(Buffer.from(raw, "base64").toString());
+        } catch (err) {
+          logger.warn("Kill-switch payload was not JSON; treating as forced trigger.", {
+            err,
+          });
+        }
+      }
+    }
+
+    const cost = Number(payload.costAmount ?? 0);
+    const budget = Number(payload.budgetAmount ?? 0);
+
+    // Budget alerts also fire for forecasted spend (forecastThresholdExceeded).
+    // Only kill billing once *actual* cost has crossed the budget, otherwise a
+    // single forecasting blip could nuke the project.
+    if (budget > 0 && cost <= budget) {
+      logger.info("Budget alert received but actual cost is within budget.", {
+        cost,
+        budget,
+        budgetDisplayName: payload.budgetDisplayName,
+      });
+      return;
+    }
+
+    const projectName = `projects/${projectId}`;
+    const billingClient = new CloudBillingClient();
+
+    const [billingInfo] = await billingClient.getProjectBillingInfo({ name: projectName });
+    if (!billingInfo.billingEnabled) {
+      logger.info("Billing already disabled for project; nothing to do.", { projectId });
+      return;
+    }
+
+    await billingClient.updateProjectBillingInfo({
+      name: projectName,
+      projectBillingInfo: { billingAccountName: "" },
+    });
+
+    logger.error("BILLING DISABLED via kill-switch", {
+      projectId,
+      cost,
+      budget,
+      budgetDisplayName: payload.budgetDisplayName,
+    });
+  }
+);
 
 export const cleanupExpiredSessions = onSchedule("every monday 03:00", async () => {
   const now = admin.firestore.Timestamp.now();
