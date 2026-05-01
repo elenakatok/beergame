@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import {
   createUserWithEmailAndPassword,
+  sendEmailVerification,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
 } from "firebase/auth";
@@ -59,13 +60,20 @@ const AuthPortal: React.FC<AuthPortalProps> = ({ initialMode = "login" }) => {
     resetFeedback();
     setLoading(true);
     try {
-      await createUserWithEmailAndPassword(auth, email.trim(), password);
+      const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
       await submitInstructorApplication({
         name: name.trim(),
         institution: institution.trim(),
         country: country.trim(),
       });
-      setMessage("Application submitted. You can sign in while your status is pending review.");
+      try {
+        await sendEmailVerification(credential.user);
+      } catch (verifyErr) {
+        if (import.meta.env.DEV) console.error("sendEmailVerification failed", verifyErr);
+      }
+      setMessage(
+        "Application submitted. We've sent a verification link to your email — please verify it before your application can be reviewed."
+      );
     } catch (err) {
       if (import.meta.env.DEV) console.error(err);
       setError("Unable to complete registration. Verify your details and try again.");
@@ -106,30 +114,69 @@ const AuthPortal: React.FC<AuthPortalProps> = ({ initialMode = "login" }) => {
 
         <div className="auth-form-panel">
           <div className="tab-row" role="tablist" aria-label="Access modes">
-            <button
-              className="tab-btn"
-              role="tab"
-              aria-selected={mode === "login"}
-              onClick={() => switchMode("login")}
-            >
-              Sign in
-            </button>
-            <button
-              className="tab-btn"
-              role="tab"
-              aria-selected={mode === "register"}
-              onClick={() => switchMode("register")}
-            >
-              Register
-            </button>
-            <button
-              className="tab-btn"
-              role="tab"
-              aria-selected={mode === "reset"}
-              onClick={() => switchMode("reset")}
-            >
-              Reset password
-            </button>
+            {mode === "login" ? (
+              <button
+                type="button"
+                className="tab-btn"
+                role="tab"
+                aria-selected="true"
+                onClick={() => switchMode("login")}
+              >
+                Sign in
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="tab-btn"
+                role="tab"
+                aria-selected="false"
+                onClick={() => switchMode("login")}
+              >
+                Sign in
+              </button>
+            )}
+            {mode === "register" ? (
+              <button
+                type="button"
+                className="tab-btn"
+                role="tab"
+                aria-selected="true"
+                onClick={() => switchMode("register")}
+              >
+                Register
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="tab-btn"
+                role="tab"
+                aria-selected="false"
+                onClick={() => switchMode("register")}
+              >
+                Register
+              </button>
+            )}
+            {mode === "reset" ? (
+              <button
+                type="button"
+                className="tab-btn"
+                role="tab"
+                aria-selected="true"
+                onClick={() => switchMode("reset")}
+              >
+                Reset password
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="tab-btn"
+                role="tab"
+                aria-selected="false"
+                onClick={() => switchMode("reset")}
+              >
+                Reset password
+              </button>
+            )}
           </div>
 
           {mode === "login" && (
@@ -157,6 +204,15 @@ const AuthPortal: React.FC<AuthPortalProps> = ({ initialMode = "login" }) => {
                   autoComplete="current-password"
                   required
                 />
+                <p className="field-help">
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={() => switchMode("reset")}
+                  >
+                    Forgot password?
+                  </button>
+                </p>
               </div>
               <button className="btn-primary" type="submit" disabled={loading}>
                 {loading ? "Signing in..." : "Sign in"}

@@ -19,6 +19,11 @@ const ensureAdminProfileFn = httpsCallable<
   { created: boolean }
 >(functions, "ensureAdminProfile");
 
+const syncEmailVerifiedFn = httpsCallable<
+  Record<string, never>,
+  { emailVerified: boolean }
+>(functions, "syncEmailVerified");
+
 const adminReviewInstructorFn = httpsCallable<
   { instructorUid: string; decision: "approve" | "reject" },
   { status: string }
@@ -28,6 +33,11 @@ const adminRevokeInstructorFn = httpsCallable<
   { instructorUid: string },
   { status: string }
 >(functions, "adminRevokeInstructor");
+
+const adminDeleteInstructorFn = httpsCallable<
+  { instructorUid: string },
+  { deleted: boolean }
+>(functions, "adminDeleteInstructor");
 
 const createSessionFn = httpsCallable<
   { notes: string; config: GameConfig },
@@ -70,6 +80,10 @@ export async function ensureAdminProfile() {
   return unwrap(await ensureAdminProfileFn({}));
 }
 
+export async function syncEmailVerified() {
+  return unwrap(await syncEmailVerifiedFn({}));
+}
+
 export async function adminReviewInstructor(input: {
   instructorUid: string;
   decision: "approve" | "reject";
@@ -79,6 +93,10 @@ export async function adminReviewInstructor(input: {
 
 export async function adminRevokeInstructor(input: { instructorUid: string }) {
   return unwrap(await adminRevokeInstructorFn(input));
+}
+
+export async function adminDeleteInstructor(input: { instructorUid: string }) {
+  return unwrap(await adminDeleteInstructorFn(input));
 }
 
 export async function createSession(input: { notes: string; config: GameConfig }) {

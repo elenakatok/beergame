@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { collection, limit, onSnapshot, orderBy, query } from "firebase/firestore";
 import { db } from "../firebase";
-import { adminReviewInstructor, adminRevokeInstructor } from "../api";
+import { adminDeleteInstructor, adminReviewInstructor, adminRevokeInstructor } from "../api";
 import { InstructorProfile, InstructorStatus } from "../types/auth";
 
 interface InstructorRow extends InstructorProfile {
@@ -48,7 +48,14 @@ const AdminDashboard: React.FC = () => {
     return unsub;
   }, []);
 
-  const pending = useMemo(() => rows.filter((r) => r.status === "pending"), [rows]);
+  const pending = useMemo(
+    () => rows.filter((r) => r.status === "pending" && r.emailVerified !== false),
+    [rows]
+  );
+  const unverifiedPendingCount = useMemo(
+    () => rows.filter((r) => r.status === "pending" && r.emailVerified === false).length,
+    [rows]
+  );
   const approvedCount = useMemo(() => rows.filter((r) => r.status === "approved").length, [rows]);
   const rejectedRevokedCount = useMemo(
     () => rows.filter((r) => r.status === "rejected" || r.status === "revoked").length,
@@ -90,6 +97,28 @@ const AdminDashboard: React.FC = () => {
     } catch (err) {
       if (import.meta.env.DEV) console.error(err);
       setAlert({ tone: "error", message: "Unable to revoke instructor." });
+    } finally {
+      setBusyUid(null);
+    }
+  };
+
+  const onDelete = async (uid: string) => {
+    if (
+      !window.confirm(
+        "Permanently delete this rejected instructor? This removes the profile and the sign-in account."
+      )
+    ) {
+      return;
+    }
+
+    setBusyUid(uid);
+    setAlert(null);
+    try {
+      await adminDeleteInstructor({ instructorUid: uid });
+      setAlert({ tone: "success", message: "Rejected instructor deleted." });
+    } catch (err) {
+      if (import.meta.env.DEV) console.error(err);
+      setAlert({ tone: "error", message: "Unable to delete instructor." });
     } finally {
       setBusyUid(null);
     }
@@ -143,6 +172,10 @@ const AdminDashboard: React.FC = () => {
             <span className="metric-label">Pending applications</span>
           </article>
           <article className="metric-card">
+            <strong>{unverifiedPendingCount}</strong>
+            <span className="metric-label">Awaiting email verification</span>
+          </article>
+          <article className="metric-card">
             <strong>{approvedCount}</strong>
             <span className="metric-label">Approved instructors</span>
           </article>
@@ -182,6 +215,7 @@ const AdminDashboard: React.FC = () => {
                 </p>
                 <div className="actions-row">
                   <button
+                    type="button"
                     className="btn-primary"
                     disabled={busyUid === row.uid}
                     onClick={() => onReview(row.uid, "approve")}
@@ -189,6 +223,7 @@ const AdminDashboard: React.FC = () => {
                     Approve
                   </button>
                   <button
+                    type="button"
                     className="btn-danger"
                     disabled={busyUid === row.uid}
                     onClick={() => onReview(row.uid, "reject")}
@@ -197,7 +232,7 @@ const AdminDashboard: React.FC = () => {
                   </button>
                 </div>
                 {busyUid === row.uid && (
-                  <p className="item-card-meta" style={{ marginTop: "0.5rem" }}>
+                  <p className="item-card-meta spacer-top-sm">
                     Updating status...
                   </p>
                 )}
@@ -269,11 +304,11 @@ const AdminDashboard: React.FC = () => {
         </div>
 
         {sortedRows.length === 0 ? (
-          <div className="empty-state" style={{ marginTop: "0.9rem" }}>
+          <div className="empty-state spacer-top-md">
             No instructors match the current filters.
           </div>
         ) : (
-          <div className="table-wrap" style={{ marginTop: "0.9rem" }}>
+          <div className="table-wrap spacer-top-md">
             <table className="data-table">
               <thead>
                 <tr>
@@ -301,15 +336,28 @@ const AdminDashboard: React.FC = () => {
                       <td className="num">{sessions}</td>
                       <td className="num">{players}</td>
                       <td>
-                        {row.role !== "admin" && row.status === "approved" ? (
+                        {row.role !== "admin" && row.status === "approved" && (
                           <button
+                            type="button"
                             className="btn-danger"
                             disabled={busyUid === row.uid}
                             onClick={() => onRevoke(row.uid)}
                           >
                             Revoke
                           </button>
-                        ) : (
+                        )}
+                        {row.role !== "admin" && row.status === "rejected" && (
+                          <button
+                            type="button"
+                            className="btn-danger"
+                            disabled={busyUid === row.uid}
+                            onClick={() => onDelete(row.uid)}
+                          >
+                            Delete
+                          </button>
+                        )}
+                        {(row.role === "admin" ||
+                          (row.status !== "approved" && row.status !== "rejected")) && (
                           <span className="text-muted">-</span>
                         )}
                       </td>

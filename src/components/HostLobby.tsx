@@ -573,6 +573,10 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
           <div>
             <h2>{isAdmin ? "Instructor Console (Admin)" : "Instructor Console"}</h2>
             <p>Launch and manage Beer Game sessions for your class roster.</p>
+            <p className="text-muted">
+              Sessions are automatically deleted 30 days after they are created. Download any data
+              you need to keep before then.
+            </p>
           </div>
           <span className="chip chip-neutral">{instructorEmail}</span>
         </div>

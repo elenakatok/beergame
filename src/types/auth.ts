@@ -9,6 +9,7 @@ export interface InstructorProfile {
   country: string;
   role: UserRole;
   status: InstructorStatus;
+  emailVerified?: boolean;
   createdAt?: unknown;
   reviewedAt?: unknown;
   reviewedBy?: string | null;

@@ -27,6 +27,7 @@ interface InstructorDoc {
   country: string;
   role: UserRole;
   status: InstructorStatus;
+  emailVerified?: boolean;
   reviewedBy: string | null;
   reviewedAt: admin.firestore.Timestamp | null;
   createdAt: admin.firestore.Timestamp;
@@ -261,6 +262,7 @@ export const submitInstructorApplication = onCall(
         country,
         role,
         status,
+        emailVerified: isAdmin ? true : Boolean(user.emailVerified),
         reviewedBy: isAdmin ? uid : null,
         reviewedAt: isAdmin ? admin.firestore.FieldValue.serverTimestamp() : null,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -272,14 +274,43 @@ export const submitInstructorApplication = onCall(
 
     await setAuthClaims(uid, role, status);
 
-    if (!isAdmin) {
+    return { status, role };
+  }
+);
+
+export const syncEmailVerified = onCall(
+  { secrets: [ADMIN_EMAIL, SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
+  async (request) => {
+    const uid = requireAuthUid(request);
+    const tokenVerified = Boolean(
+      (request.auth?.token as Record<string, unknown> | undefined)?.email_verified
+    );
+
+    if (!tokenVerified) {
+      return { emailVerified: false };
+    }
+
+    const profileRef = db.collection("instructors").doc(uid);
+    const profileSnap = await profileRef.get();
+    if (!profileSnap.exists) {
+      return { emailVerified: true };
+    }
+
+    const profile = profileSnap.data() as InstructorDoc;
+    if (profile.emailVerified === true) {
+      return { emailVerified: true };
+    }
+
+    await profileRef.set({ emailVerified: true }, { merge: true });
+
+    if (profile.role === "instructor" && profile.status === "pending") {
       const appUrl = APP_BASE_URL.value();
       const emailText = [
-        "New Beer Game instructor application received.",
-        `Name: ${name}`,
-        `Email: ${user.email}`,
-        `Institution: ${institution}`,
-        `Country: ${country}`,
+        "New Beer Game instructor application received (email verified).",
+        `Name: ${profile.name}`,
+        `Email: ${profile.email}`,
+        `Institution: ${profile.institution}`,
+        `Country: ${profile.country}`,
         "",
         `Review in app: ${appUrl}`,
       ].join("\n");
@@ -292,7 +323,7 @@ export const submitInstructorApplication = onCall(
       });
     }
 
-    return { status, role };
+    return { emailVerified: true };
   }
 );
 
@@ -319,6 +350,12 @@ export const adminReviewInstructor = onCall(
     const instructorData = instructorSnap.data() as InstructorDoc;
     if (instructorData.role === "admin") {
       throw new HttpsError("failed-precondition", "Admin account cannot be reviewed.");
+    }
+    if (decision === "approve" && instructorData.emailVerified === false) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Cannot approve an instructor whose email has not been verified."
+      );
     }
 
     const nextStatus: InstructorStatus = decision === "approve" ? "approved" : "rejected";
@@ -403,6 +440,47 @@ export const adminRevokeInstructor = onCall(
     return { status: "revoked" };
   }
 );
+
+export const adminDeleteInstructor = onCall(async (request) => {
+  const reviewerUid = requireAuthUid(request);
+  await requireAdmin(reviewerUid);
+
+  const instructorUid =
+    typeof request.data?.instructorUid === "string" ? request.data.instructorUid.trim() : "";
+  if (!instructorUid) {
+    throw new HttpsError("invalid-argument", "instructorUid is required.");
+  }
+
+  const instructorRef = db.collection("instructors").doc(instructorUid);
+  const instructorSnap = await instructorRef.get();
+  if (!instructorSnap.exists) {
+    throw new HttpsError("not-found", "Instructor profile not found.");
+  }
+
+  const instructorData = instructorSnap.data() as InstructorDoc;
+  if (instructorData.role === "admin") {
+    throw new HttpsError("failed-precondition", "Admin account cannot be deleted.");
+  }
+  if (instructorData.status !== "rejected") {
+    throw new HttpsError(
+      "failed-precondition",
+      "Only rejected instructors can be deleted."
+    );
+  }
+
+  await instructorRef.delete();
+
+  try {
+    await admin.auth().deleteUser(instructorUid);
+  } catch (err) {
+    logger.warn("Failed to delete auth user during instructor delete", {
+      uid: instructorUid,
+      err,
+    });
+  }
+
+  return { deleted: true };
+});
 
 export const createSession = onCall(async (request) => {
   const uid = requireAuthUid(request);

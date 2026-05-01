@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { User, onAuthStateChanged, signOut } from "firebase/auth";
+import { User, onAuthStateChanged, sendEmailVerification, signOut } from "firebase/auth";
 import { doc, onSnapshot } from "firebase/firestore";
 import HostLobby from "./components/HostLobby";
 import PlayerJoin from "./components/PlayerJoin";
@@ -8,8 +8,15 @@ import AuthPortal from "./components/AuthPortal";
 import AdminDashboard from "./components/AdminDashboard";
 import titleBg from "./beergametitle.webp";
 import { auth, db } from "./firebase";
-import { ensureAdminProfile } from "./api";
+import { ensureAdminProfile, syncEmailVerified } from "./api";
 import { InstructorProfile } from "./types/auth";
+
+if (typeof document !== "undefined") {
+  document.documentElement.style.setProperty(
+    "--landing-hero-image",
+    `url(${titleBg})`
+  );
+}
 
 type View = "home" | "instructor" | "join" | "player";
 type DashboardTab = "instructor" | "admin";
@@ -24,6 +31,9 @@ const App: React.FC = () => {
   const [profile, setProfile] = useState<InstructorProfile | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
+  const [verifyBusy, setVerifyBusy] = useState(false);
+  const [verifyMessage, setVerifyMessage] = useState<string | null>(null);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (nextUser) => {
@@ -81,6 +91,60 @@ const App: React.FC = () => {
     };
   }, [user]);
 
+  const needsEmailVerification = profile?.emailVerified === false;
+
+  useEffect(() => {
+    if (!user || !needsEmailVerification || !user.emailVerified) {
+      return;
+    }
+    syncEmailVerified().catch((err) => {
+      if (import.meta.env.DEV) console.error("syncEmailVerified failed", err);
+    });
+  }, [user, needsEmailVerification]);
+
+  const onCheckVerified = async () => {
+    if (!auth.currentUser) {
+      return;
+    }
+    setVerifyBusy(true);
+    setVerifyError(null);
+    setVerifyMessage(null);
+    try {
+      await auth.currentUser.reload();
+      const refreshed = auth.currentUser;
+      setUser(refreshed);
+      if (refreshed?.emailVerified) {
+        await syncEmailVerified();
+        setVerifyMessage("Email verified. Your application is now visible to admins for review.");
+      } else {
+        setVerifyError("Email is not verified yet. Please click the link in the verification email.");
+      }
+    } catch (err) {
+      if (import.meta.env.DEV) console.error(err);
+      setVerifyError("Unable to refresh verification status. Try again in a moment.");
+    } finally {
+      setVerifyBusy(false);
+    }
+  };
+
+  const onResendVerification = async () => {
+    if (!auth.currentUser) {
+      return;
+    }
+    setVerifyBusy(true);
+    setVerifyError(null);
+    setVerifyMessage(null);
+    try {
+      await sendEmailVerification(auth.currentUser);
+      setVerifyMessage("Verification email resent. Check your inbox (and spam folder).");
+    } catch (err) {
+      if (import.meta.env.DEV) console.error(err);
+      setVerifyError("Unable to resend verification email. Try again in a moment.");
+    } finally {
+      setVerifyBusy(false);
+    }
+  };
+
   const isApproved = profile?.status === "approved";
   const isAdmin = isApproved && profile?.role === "admin";
   const activeDashboardTab: DashboardTab = isAdmin ? dashboardTab : "instructor";
@@ -93,7 +157,7 @@ const App: React.FC = () => {
     if (profileError) {
       return (
         <div className="panel">
-          <p style={{ color: "#b91c1c" }}>{profileError}</p>
+          <div className="alert alert-error">{profileError}</div>
         </div>
       );
     }
@@ -113,6 +177,52 @@ const App: React.FC = () => {
           <button className="btn-subtle" onClick={() => signOut(auth)}>
             Sign out
           </button>
+        </div>
+      );
+    }
+
+    if (needsEmailVerification && !user.emailVerified) {
+      return (
+        <div className="panel dashboard-stack">
+          <div className="section-header">
+            <h2>Verify your email</h2>
+            <span className="chip chip-pending">unverified</span>
+          </div>
+          <p>
+            We sent a verification link to <strong>{profile.email}</strong>. Click that link to
+            confirm your email address. Your application will not be reviewed until your email is
+            verified.
+          </p>
+          <div className="actions-row">
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={verifyBusy}
+              onClick={onCheckVerified}
+            >
+              {verifyBusy ? "Checking..." : "I've verified my email"}
+            </button>
+            <button
+              type="button"
+              className="btn-subtle"
+              disabled={verifyBusy}
+              onClick={onResendVerification}
+            >
+              Resend verification email
+            </button>
+            <button
+              type="button"
+              className="btn-subtle"
+              disabled={verifyBusy}
+              onClick={() => signOut(auth)}
+            >
+              Sign out
+            </button>
+          </div>
+          <div aria-live="polite">
+            {verifyError && <div className="alert alert-error">{verifyError}</div>}
+            {verifyMessage && <div className="alert alert-success">{verifyMessage}</div>}
+          </div>
         </div>
       );
     }
@@ -159,22 +269,48 @@ const App: React.FC = () => {
 
         {isAdmin && (
           <div className="tab-row" role="tablist" aria-label="Dashboard sections">
-            <button
-              className="tab-btn"
-              role="tab"
-              aria-selected={activeDashboardTab === "instructor"}
-              onClick={() => setDashboardTab("instructor")}
-            >
-              Instructor Console
-            </button>
-            <button
-              className="tab-btn"
-              role="tab"
-              aria-selected={activeDashboardTab === "admin"}
-              onClick={() => setDashboardTab("admin")}
-            >
-              Admin Review
-            </button>
+            {activeDashboardTab === "instructor" ? (
+              <button
+                type="button"
+                className="tab-btn"
+                role="tab"
+                aria-selected="true"
+                onClick={() => setDashboardTab("instructor")}
+              >
+                Instructor Console
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="tab-btn"
+                role="tab"
+                aria-selected="false"
+                onClick={() => setDashboardTab("instructor")}
+              >
+                Instructor Console
+              </button>
+            )}
+            {activeDashboardTab === "admin" ? (
+              <button
+                type="button"
+                className="tab-btn"
+                role="tab"
+                aria-selected="true"
+                onClick={() => setDashboardTab("admin")}
+              >
+                Admin Review
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="tab-btn"
+                role="tab"
+                aria-selected="false"
+                onClick={() => setDashboardTab("admin")}
+              >
+                Admin Review
+              </button>
+            )}
           </div>
         )}
 
@@ -195,24 +331,21 @@ const App: React.FC = () => {
     authLandingMode,
     isAdmin,
     isApproved,
+    needsEmailVerification,
     profile,
     profileError,
     profileLoading,
     user,
+    verifyBusy,
+    verifyError,
+    verifyMessage,
   ]);
 
   return (
     <div className="app-shell">
       <div className="app-frame">
         {view === "home" && (
-          <div
-            className="hero-panel landing-hero"
-            style={{
-              backgroundImage: `linear-gradient(132deg, rgba(255,255,255,0.94), rgba(245,250,255,0.86)), url(${titleBg})`,
-              backgroundSize: "cover",
-              backgroundPosition: "center",
-            }}
-          >
+          <div className="hero-panel landing-hero">
             <div className="landing-topbar">
               <button
                 className="btn-subtle landing-top-request"
