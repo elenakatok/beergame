@@ -3,7 +3,8 @@
     "allow": [
       "Bash(wc:*)",
       "Bash(cd /c/Users/siems/games/beergame && npm run build 2>&1)",
-      "Bash(npx:*)"
+      "Bash(npx:*)",
+      "PowerShell($root = 'c:\\\\Users\\\\siems\\\\games\\\\beergame'; Get-ChildItem -Force -Path $root -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\\\\.env' } | ForEach-Object { Write-Output $_.Name }; Write-Output '---'; Test-Path \"$root\\\\.env\"; Test-Path \"$root\\\\.env.local\"; Test-Path \"$root\\\\.env.development\")"
     ]
   }
 }

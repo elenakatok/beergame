@@ -13,6 +13,11 @@ functions/lib
 dist
 dist-ssr
 .firebase/
+
+# Playwright
+/test-results/
+/playwright-report/
+/playwright/.cache/
 *.local
 
 # Environment variables
