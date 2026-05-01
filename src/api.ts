@@ -1,6 +1,20 @@
 import { HttpsCallableResult, httpsCallable } from "firebase/functions";
-import { functions } from "./firebase";
+import { signInAnonymously } from "firebase/auth";
+import { auth, functions } from "./firebase";
 import { GameConfig } from "./logic/gameModel";
+
+let pendingAnon: Promise<unknown> | null = null;
+async function ensurePlayerAuth() {
+  if (auth.currentUser) {
+    return;
+  }
+  if (!pendingAnon) {
+    pendingAnon = signInAnonymously(auth).finally(() => {
+      pendingAnon = null;
+    });
+  }
+  await pendingAnon;
+}
 
 export interface JoinOrResumeResponse {
   mode: "created" | "reconnected";
@@ -111,6 +125,7 @@ export async function joinOrResumePlayer(input: {
   gameCode: string;
   name: string;
 }) {
+  await ensurePlayerAuth();
   return unwrap(await joinOrResumePlayerFn(input));
 }
 
@@ -120,6 +135,7 @@ export async function submitPlayerOrder(input: {
   sessionToken: string;
   order: number;
 }) {
+  await ensurePlayerAuth();
   return unwrap(await submitPlayerOrderFn(input));
 }
 
@@ -128,5 +144,6 @@ export async function heartbeatPlayer(input: {
   playerId: string;
   sessionToken: string;
 }) {
+  await ensurePlayerAuth();
   return unwrap(await heartbeatPlayerFn(input));
 }

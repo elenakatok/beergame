@@ -108,6 +108,44 @@ async function getInstructorDoc(uid: string) {
   return db.collection("instructors").doc(uid).get();
 }
 
+async function enforceRateLimit(
+  uid: string,
+  key: string,
+  maxCalls: number,
+  windowSec: number
+): Promise<void> {
+  const ref = db.collection("rateLimits").doc(`${uid}_${key}`);
+  const now = Date.now();
+  const windowMs = windowSec * 1000;
+  const snap = await ref.get();
+
+  if (!snap.exists) {
+    await ref.set({ count: 1, windowStart: now, updatedAt: now });
+    return;
+  }
+
+  const data = snap.data() as { count?: number; windowStart?: number };
+  const windowStart = typeof data.windowStart === "number" ? data.windowStart : 0;
+  const count = typeof data.count === "number" ? data.count : 0;
+
+  if (now - windowStart >= windowMs) {
+    await ref.set({ count: 1, windowStart: now, updatedAt: now });
+    return;
+  }
+
+  if (count >= maxCalls) {
+    throw new HttpsError(
+      "resource-exhausted",
+      "Too many requests. Please slow down and try again shortly."
+    );
+  }
+
+  await ref.update({
+    count: admin.firestore.FieldValue.increment(1),
+    updatedAt: now,
+  });
+}
+
 async function requireAdmin(uid: string): Promise<admin.firestore.DocumentSnapshot> {
   const snap = await getInstructorDoc(uid);
   if (!snap.exists) {
@@ -132,6 +170,38 @@ async function requireApprovedInstructor(uid: string): Promise<admin.firestore.D
   return snap;
 }
 
+const EMAIL_DAILY_CAP = 500;
+
+function todayKeyUtc(): string {
+  const now = new Date();
+  const yyyy = now.getUTCFullYear();
+  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(now.getUTCDate()).padStart(2, "0");
+  return `${yyyy}${mm}${dd}`;
+}
+
+async function reserveEmailQuota(): Promise<boolean> {
+  const dayKey = todayKeyUtc();
+  const ref = db.collection("emailQuota").doc(dayKey);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const current = snap.exists ? Number((snap.data() as { count?: number }).count ?? 0) : 0;
+    if (current >= EMAIL_DAILY_CAP) {
+      return false;
+    }
+    tx.set(
+      ref,
+      {
+        count: current + 1,
+        dayKey,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    return true;
+  });
+}
+
 async function sendEmail(params: {
   to: string[];
   subject: string;
@@ -142,6 +212,16 @@ async function sendEmail(params: {
   const sender = MAIL_FROM.value();
   if (!apiKey || !sender) {
     logger.warn("SMTP2GO secrets are not configured; skipping email", {
+      to: params.to,
+      subject: params.subject,
+    });
+    return;
+  }
+
+  const allowed = await reserveEmailQuota();
+  if (!allowed) {
+    logger.warn("Daily email quota exceeded; dropping send.", {
+      cap: EMAIL_DAILY_CAP,
       to: params.to,
       subject: params.subject,
     });
@@ -198,7 +278,7 @@ async function generateUniqueGameCode(): Promise<string> {
 }
 
 export const ensureAdminProfile = onCall(
-  { enforceAppCheck: true, secrets: [ADMIN_EMAIL] },
+  { enforceAppCheck: true, maxInstances: 100, secrets: [ADMIN_EMAIL] },
   async (request) => {
     const uid = requireAuthUid(request);
     const user = await admin.auth().getUser(uid);
@@ -234,9 +314,10 @@ export const ensureAdminProfile = onCall(
 );
 
 export const submitInstructorApplication = onCall(
-  { enforceAppCheck: true, secrets: [ADMIN_EMAIL, SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
+  { enforceAppCheck: true, maxInstances: 100, secrets: [ADMIN_EMAIL, SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
   async (request) => {
     const uid = requireAuthUid(request);
+    await enforceRateLimit(uid, "submitInstructorApplication", 5, 300);
     const name = typeof request.data?.name === "string" ? request.data.name.trim() : "";
     const institution =
       typeof request.data?.institution === "string" ? request.data.institution.trim() : "";
@@ -281,7 +362,7 @@ export const submitInstructorApplication = onCall(
 );
 
 export const syncEmailVerified = onCall(
-  { enforceAppCheck: true, secrets: [ADMIN_EMAIL, SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
+  { enforceAppCheck: true, maxInstances: 100, secrets: [ADMIN_EMAIL, SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
   async (request) => {
     const uid = requireAuthUid(request);
     const tokenVerified = Boolean(
@@ -330,7 +411,7 @@ export const syncEmailVerified = onCall(
 );
 
 export const adminReviewInstructor = onCall(
-  { enforceAppCheck: true, secrets: [SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
+  { enforceAppCheck: true, maxInstances: 100, secrets: [SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
   async (request) => {
     const reviewerUid = requireAuthUid(request);
     await requireAdmin(reviewerUid);
@@ -398,7 +479,7 @@ export const adminReviewInstructor = onCall(
 );
 
 export const adminRevokeInstructor = onCall(
-  { enforceAppCheck: true, secrets: [SMTP2GO_API_KEY, MAIL_FROM] },
+  { enforceAppCheck: true, maxInstances: 100, secrets: [SMTP2GO_API_KEY, MAIL_FROM] },
   async (request) => {
     const reviewerUid = requireAuthUid(request);
     await requireAdmin(reviewerUid);
@@ -443,7 +524,7 @@ export const adminRevokeInstructor = onCall(
   }
 );
 
-export const adminDeleteInstructor = onCall({ enforceAppCheck: true }, async (request) => {
+export const adminDeleteInstructor = onCall({ enforceAppCheck: true, maxInstances: 100 }, async (request) => {
   const reviewerUid = requireAuthUid(request);
   await requireAdmin(reviewerUid);
 
@@ -484,7 +565,7 @@ export const adminDeleteInstructor = onCall({ enforceAppCheck: true }, async (re
   return { deleted: true };
 });
 
-export const createSession = onCall({ enforceAppCheck: true }, async (request) => {
+export const createSession = onCall({ enforceAppCheck: true, maxInstances: 100 }, async (request) => {
   const uid = requireAuthUid(request);
   const instructorSnap = await requireApprovedInstructor(uid);
   const instructor = instructorSnap.data() as InstructorDoc;
@@ -517,7 +598,7 @@ export const createSession = onCall({ enforceAppCheck: true }, async (request) =
   return { gameCode: code };
 });
 
-export const deleteSession = onCall({ enforceAppCheck: true }, async (request) => {
+export const deleteSession = onCall({ enforceAppCheck: true, maxInstances: 100 }, async (request) => {
   const uid = requireAuthUid(request);
   const instructorSnap = await requireApprovedInstructor(uid);
   const instructor = instructorSnap.data() as InstructorDoc;
@@ -541,7 +622,9 @@ export const deleteSession = onCall({ enforceAppCheck: true }, async (request) =
   return { deleted: true };
 });
 
-export const joinOrResumePlayer = onCall({ enforceAppCheck: true }, async (request) => {
+export const joinOrResumePlayer = onCall({ enforceAppCheck: true, maxInstances: 100 }, async (request) => {
+  const callerUid = requireAuthUid(request);
+  await enforceRateLimit(callerUid, "joinOrResumePlayer", 10, 60);
   const gameCode = parseGameCode(request.data?.gameCode);
   const rawName = typeof request.data?.name === "string" ? request.data.name : "";
   const name = rawName.trim();
@@ -789,7 +872,9 @@ async function validatePlayerToken(params: {
   };
 }
 
-export const heartbeatPlayer = onCall({ enforceAppCheck: true }, async (request) => {
+export const heartbeatPlayer = onCall({ enforceAppCheck: true, maxInstances: 100 }, async (request) => {
+  const callerUid = requireAuthUid(request);
+  await enforceRateLimit(callerUid, "heartbeatPlayer", 60, 60);
   const gameCode = parseGameCode(request.data?.gameCode);
   const playerId = typeof request.data?.playerId === "string" ? request.data.playerId.trim() : "";
   const sessionToken =
@@ -807,7 +892,9 @@ export const heartbeatPlayer = onCall({ enforceAppCheck: true }, async (request)
   return { ok: true, serverTime: Date.now() };
 });
 
-export const submitPlayerOrder = onCall({ enforceAppCheck: true }, async (request) => {
+export const submitPlayerOrder = onCall({ enforceAppCheck: true, maxInstances: 100 }, async (request) => {
+  const callerUid = requireAuthUid(request);
+  await enforceRateLimit(callerUid, "submitPlayerOrder", 30, 60);
   const gameCode = parseGameCode(request.data?.gameCode);
   const playerId = typeof request.data?.playerId === "string" ? request.data.playerId.trim() : "";
   const sessionToken =
@@ -931,6 +1018,69 @@ export const billingKillSwitch = onMessagePublished(
     });
   }
 );
+
+export const cleanupOrphanAuthUsers = onSchedule(
+  { schedule: "every monday 03:30", timeoutSeconds: 540 },
+  async () => {
+  const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+  const RATE_LIMIT_TTL_MS = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+
+  let pageToken: string | undefined;
+  let scanned = 0;
+  let deletedAuthUsers = 0;
+
+  do {
+    const result: admin.auth.ListUsersResult = await admin.auth().listUsers(1000, pageToken);
+    for (const user of result.users) {
+      scanned += 1;
+      const created = user.metadata.creationTime ? Date.parse(user.metadata.creationTime) : 0;
+      const age = now - created;
+      const isAnonymous = (user.providerData?.length ?? 0) === 0;
+      const threshold = isAnonymous ? THIRTY_DAYS_MS : SEVEN_DAYS_MS;
+      if (age < threshold) {
+        continue;
+      }
+
+      const profileSnap = await db.collection("instructors").doc(user.uid).get();
+      if (profileSnap.exists) {
+        continue;
+      }
+
+      try {
+        await admin.auth().deleteUser(user.uid);
+        deletedAuthUsers += 1;
+      } catch (err) {
+        logger.warn("Failed to delete orphan auth user", { uid: user.uid, err });
+      }
+    }
+    pageToken = result.pageToken;
+  } while (pageToken);
+
+  let deletedRateLimits = 0;
+  while (true) {
+    const cutoff = now - RATE_LIMIT_TTL_MS;
+    const stale = await db
+      .collection("rateLimits")
+      .where("updatedAt", "<", cutoff)
+      .limit(200)
+      .get();
+    if (stale.empty) {
+      break;
+    }
+    const batch = db.batch();
+    stale.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+    deletedRateLimits += stale.size;
+  }
+
+  logger.info("Orphan auth user cleanup complete", {
+    scanned,
+    deletedAuthUsers,
+    deletedRateLimits,
+  });
+});
 
 export const cleanupExpiredSessions = onSchedule("every monday 03:00", async () => {
   const now = admin.firestore.Timestamp.now();

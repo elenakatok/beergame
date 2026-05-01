@@ -39,7 +39,7 @@ const App: React.FC = () => {
     const unsub = onAuthStateChanged(auth, (nextUser) => {
       setUser(nextUser);
       setAuthLoading(false);
-      if (!nextUser) {
+      if (!nextUser || nextUser.isAnonymous) {
         setProfile(null);
         setProfileLoading(false);
       } else {
@@ -50,7 +50,7 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!user) {
+    if (!user || user.isAnonymous) {
       return;
     }
 
@@ -162,7 +162,7 @@ const App: React.FC = () => {
       );
     }
 
-    if (!user) {
+    if (!user || user.isAnonymous) {
       return <AuthPortal initialMode={authLandingMode} />;
     }
 
