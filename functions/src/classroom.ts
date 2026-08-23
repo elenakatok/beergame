@@ -128,12 +128,16 @@ export const provisionClassSession = onRequest(
       return;
     }
 
-    const body = (req.body ?? {}) as { config?: unknown; groups?: unknown };
+    const body = (req.body ?? {}) as { config?: unknown; groups?: unknown; instanceId?: unknown };
     const groups = Array.isArray(body.groups) ? (body.groups as ProvisionGroup[]) : null;
     if (!groups || groups.length === 0) {
       res.status(400).json({ error: "groups[] is required" });
       return;
     }
+    // The classroom's game_instances/<id> — used as game_instance_id when results
+    // are pushed back to the gradebook. Falls back to the game code if absent.
+    const classroomInstanceId =
+      typeof body.instanceId === "string" && body.instanceId.trim() ? body.instanceId.trim() : null;
 
     const config = sanitizeConfig(body.config);
     const code = await generateUniqueGameCode();
@@ -149,6 +153,7 @@ export const provisionClassSession = onRequest(
       expiresAt,
       ownerInstructorId: "classroom",
       source: "classroom",
+      classroomInstanceId,
       config,
       humanJoinCount: 0,
     });
@@ -227,6 +232,47 @@ export const provisionClassSession = onRequest(
     await batch.commit();
     logger.info("provisionClassSession created", { gameCode: code, groups: groups.length, seats: seats.length });
     res.json({ gameCode: code, seats });
+  }
+);
+
+/**
+ * finalizeClassSession — server-to-server (same secret as provisioning). Ends a
+ * classroom session, whether or not every team finished (students may leave a
+ * live class before the last week). Setting status → "ended" fires the
+ * onGameEndedPushResults trigger, which pushes participation to the gradebook.
+ * The server also auto-ends a session when every team completes on its own; this
+ * is the explicit control the classroom dashboard uses to finalize early.
+ */
+export const finalizeClassSession = onRequest(
+  { secrets: [CLASSROOM_PROVISION_SECRET], cors: true, maxInstances: 20 },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "method-not-allowed" });
+      return;
+    }
+    if (!bearerMatches(req.headers.authorization, CLASSROOM_PROVISION_SECRET.value())) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+    const gameCode = parseGameCode((req.body ?? {}).gameCode);
+    const gameRef = db().collection("games").doc(gameCode);
+    const snap = await gameRef.get();
+    if (!snap.exists) {
+      res.status(404).json({ error: "not-found" });
+      return;
+    }
+    const data = snap.data() as Record<string, unknown>;
+    if (data.source !== "classroom") {
+      res.status(403).json({ error: "not-a-classroom-session" });
+      return;
+    }
+    if (data.status === "ended") {
+      res.json({ ok: true, alreadyEnded: true });
+      return;
+    }
+    await gameRef.update({ status: "ended", endedAt: FieldValue.serverTimestamp() });
+    logger.info("finalizeClassSession ended session", { gameCode });
+    res.json({ ok: true });
   }
 );
 
