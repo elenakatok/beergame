@@ -32,10 +32,12 @@ const db = admin.firestore();
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
 // App Check tokens can only be minted by the real App Check backend (there is no
-// App Check emulator), so enforcing it locally would make every callable fail with
-// UNAUTHENTICATED. Disable enforcement only when running inside the emulator; in
-// production FUNCTIONS_EMULATOR is unset, so enforcement stays on.
-const ENFORCE_APP_CHECK = process.env.FUNCTIONS_EMULATOR !== "true";
+// App Check emulator), so it is never enforced locally. In production it is now
+// OPT-IN: enforced only when APPCHECK_ENFORCE=true is set, so the first deploy can
+// go out before reCAPTCHA/App Check is configured. Turn it on later by setting
+// APPCHECK_ENFORCE=true (functions) + VITE_USE_APPCHECK=true (frontend).
+const ENFORCE_APP_CHECK =
+  process.env.FUNCTIONS_EMULATOR !== "true" && process.env.APPCHECK_ENFORCE === "true";
 
 const SMTP2GO_API_KEY = defineSecret("SMTP2GO_API_KEY");
 const MAIL_FROM = defineSecret("MAIL_FROM");

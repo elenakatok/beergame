@@ -36,7 +36,9 @@ import {
 
 const CLASSROOM_PROVISION_SECRET = defineSecret("CLASSROOM_PROVISION_SECRET");
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-const ENFORCE_APP_CHECK = process.env.FUNCTIONS_EMULATOR !== "true";
+// App Check is opt-in (see index.ts): enforced only when APPCHECK_ENFORCE=true.
+const ENFORCE_APP_CHECK =
+  process.env.FUNCTIONS_EMULATOR !== "true" && process.env.APPCHECK_ENFORCE === "true";
 
 const db = () => admin.firestore();
 

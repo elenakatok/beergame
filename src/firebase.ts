@@ -54,9 +54,13 @@ if (import.meta.env.DEV) {
   self.FIREBASE_APPCHECK_DEBUG_TOKEN = debugToken && debugToken.length > 0 ? debugToken : true;
 }
 
-// App Check talks to reCAPTCHA + the real backend, so only initialize it when we
-// are NOT running fully local against the emulators.
-if (!USE_EMULATORS) {
+// App Check talks to reCAPTCHA + the real backend. It is OPT-IN: initialized only
+// when VITE_USE_APPCHECK=true (and never against the emulators, which have no App
+// Check). This lets the first deploy ship before reCAPTCHA is configured; turn it
+// on later with VITE_USE_APPCHECK=true + a real VITE_RECAPTCHA_SITE_KEY, alongside
+// APPCHECK_ENFORCE=true on the functions.
+const USE_APPCHECK = import.meta.env.VITE_USE_APPCHECK === "true";
+if (!USE_EMULATORS && USE_APPCHECK) {
   // Initialize App Check without assigning the returned value to avoid unused variable.
   initializeAppCheck(app, {
     provider: new ReCaptchaV3Provider(
