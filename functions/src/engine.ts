@@ -69,6 +69,55 @@ export interface TeamState {
 
 export type CostByRole = Record<Role, number>;
 
+// ── Ported from src/logic/gameModel.ts (KEEP IN SYNC) ─────────────────────────
+export function defaultConfig(): GameConfig {
+  const nWeeks = 40;
+  const customerDemand = Array.from({ length: nWeeks }, (_, i) => (i < 4 ? 4 : 8));
+  return {
+    nWeeks,
+    inventoryCost: 0.5,
+    backlogCost: 1.0,
+    customerDemand,
+    extraOrderDelay: false,
+    displayUpstreamBackorders: false,
+  };
+}
+
+function createStage(role: Role): StageRuntimeState {
+  return {
+    role,
+    playerId: null,
+    playerName: null,
+    isRobot: false,
+    inventory: 12,
+    backlog: 0,
+    delay1: 4,
+    delay2: 4,
+    incomingOrder: 4,
+    history: [],
+  };
+}
+
+export function createInitialTeamState(id: string, name: string): TeamState {
+  return {
+    id,
+    name,
+    currentWeek: 1,
+    totalCost: 0,
+    stages: {
+      retailer: createStage("retailer"),
+      wholesaler: createStage("wholesaler"),
+      distributor: createStage("distributor"),
+      factory: createStage("factory"),
+    },
+    ordersSubmitted: {},
+    pendingOrders: {},
+    previousWeekOrders: { retailer: 4, wholesaler: 4, distributor: 4, factory: 4 },
+    supplyChainCostHistory: [],
+    humanCount: 0,
+  };
+}
+
 function createZeroCost(): CostByRole {
   return { retailer: 0, wholesaler: 0, distributor: 0, factory: 0 };
 }

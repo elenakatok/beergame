@@ -8,8 +8,14 @@ import AuthPortal from "./components/AuthPortal";
 import AdminDashboard from "./components/AdminDashboard";
 import titleBg from "./beergametitle.webp";
 import { auth, db } from "./firebase";
-import { ensureAdminProfile, syncEmailVerified } from "./api";
+import { ensureAdminProfile, syncEmailVerified, resumeClassPlayer } from "./api";
 import { InstructorProfile } from "./types/auth";
+
+// Classroom deep-link session keys — must match PlayerJoin / PlayerView.
+const PLAYER_GAME_CODE_KEY = "beerGame_player_gameCode";
+const PLAYER_ID_KEY = "beerGame_player_playerId";
+const PLAYER_ROLE_KEY = "beerGame_player_role";
+const PLAYER_TOKEN_KEY = "beerGame_player_sessionToken";
 
 if (typeof document !== "undefined") {
   document.documentElement.style.setProperty(
@@ -24,6 +30,7 @@ type AuthLandingMode = "login" | "register" | "reset";
 
 const App: React.FC = () => {
   const [view, setView] = useState<View>("home");
+  const [classResume, setClassResume] = useState<"idle" | "loading" | "error">("idle");
   const [authLandingMode, setAuthLandingMode] = useState<AuthLandingMode>("login");
   const [dashboardTab, setDashboardTab] = useState<DashboardTab>("instructor");
   const [user, setUser] = useState<User | null>(null);
@@ -34,6 +41,32 @@ const App: React.FC = () => {
   const [verifyBusy, setVerifyBusy] = useState(false);
   const [verifyMessage, setVerifyMessage] = useState<string | null>(null);
   const [verifyError, setVerifyError] = useState<string | null>(null);
+
+  // Classroom deep-link entry: a student arrives at /?class=<gameCode>&sid=<studentId>.
+  // Exchange the studentId for the pre-assigned seat and drop straight into PlayerView.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const rawCode = params.get("class");
+    const studentId = params.get("sid");
+    if (!rawCode || !studentId) return;
+    const gameCode = rawCode.trim().toUpperCase();
+    setClassResume("loading");
+    (async () => {
+      try {
+        const seat = await resumeClassPlayer({ gameCode, studentId });
+        sessionStorage.setItem(PLAYER_GAME_CODE_KEY, gameCode);
+        sessionStorage.setItem(PLAYER_ID_KEY, seat.playerId);
+        sessionStorage.setItem(PLAYER_ROLE_KEY, seat.role ?? "pending");
+        sessionStorage.setItem(PLAYER_TOKEN_KEY, seat.sessionToken);
+        window.history.replaceState({}, "", window.location.pathname);
+        setView("player");
+        setClassResume("idle");
+      } catch (err) {
+        if (import.meta.env.DEV) console.error("resumeClassPlayer failed", err);
+        setClassResume("error");
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (nextUser) => {
@@ -340,6 +373,33 @@ const App: React.FC = () => {
     verifyError,
     verifyMessage,
   ]);
+
+  if (classResume !== "idle") {
+    return (
+      <div className="app-shell">
+        <div className="app-frame">
+          <div className="panel">
+            {classResume === "loading" ? (
+              <>
+                <h2>Joining your game…</h2>
+                <p>Taking you to your seat.</p>
+              </>
+            ) : (
+              <>
+                <div className="alert alert-error">
+                  We couldn't find your seat for this session. Your instructor may not have started
+                  the game yet, or the link is for a different class.
+                </div>
+                <button className="btn-subtle" onClick={() => setClassResume("idle")}>
+                  Continue to home
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell">

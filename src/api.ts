@@ -68,6 +68,22 @@ const joinOrResumePlayerFn = httpsCallable<
   JoinOrResumeResponse
 >(functions, "joinOrResumePlayer");
 
+export interface ClassSeatResponse {
+  playerId: string;
+  role: string | null;
+  teamId: string | null;
+  teamName: string | null;
+  name: string | null;
+  sessionToken: string;
+}
+
+// Classroom deep-link: a student exchanges their classroom studentId for the
+// seat pre-assigned by provisionClassSession. Mirrors joinOrResumePlayer.
+const resumeClassPlayerFn = httpsCallable<
+  { gameCode: string; studentId: string },
+  ClassSeatResponse
+>(functions, "resumeClassPlayer");
+
 const submitPlayerOrderFn = httpsCallable<
   { gameCode: string; playerId: string; sessionToken: string; order: number },
   { ok: boolean }
@@ -127,6 +143,14 @@ export async function joinOrResumePlayer(input: {
 }) {
   await ensurePlayerAuth();
   return unwrap(await joinOrResumePlayerFn(input));
+}
+
+export async function resumeClassPlayer(input: {
+  gameCode: string;
+  studentId: string;
+}) {
+  await ensurePlayerAuth();
+  return unwrap(await resumeClassPlayerFn(input));
 }
 
 export async function submitPlayerOrder(input: {

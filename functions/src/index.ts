@@ -14,6 +14,9 @@ import {
   simulateWeek,
   teamIsReadyToAdvance,
 } from "./engine";
+
+// Classroom bridge (Workstream B, clean-guest option) — additive, self-contained.
+export { provisionClassSession, resumeClassPlayer } from "./classroom";
 // Import the Firestore value helpers from the modular subpath. The Functions
 // emulator runtime wraps `admin.firestore` and strips its static members
 // (FieldValue/Timestamp), so `FieldValue` is undefined locally;
