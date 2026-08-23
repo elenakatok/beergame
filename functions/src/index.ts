@@ -3,14 +3,34 @@ import * as admin from "firebase-admin";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { onMessagePublished } from "firebase-functions/v2/pubsub";
 import { onSchedule } from "firebase-functions/v2/scheduler";
+import { onDocumentWritten } from "firebase-functions/v2/firestore";
 import { defineSecret } from "firebase-functions/params";
 import * as logger from "firebase-functions/logger";
 import { CloudBillingClient } from "@google-cloud/billing";
+import {
+  GameConfig as EngineGameConfig,
+  TeamState as EngineTeamState,
+  computeOrdersForWeek,
+  simulateWeek,
+  teamIsReadyToAdvance,
+} from "./engine";
+// Import the Firestore value helpers from the modular subpath. The Functions
+// emulator runtime wraps `admin.firestore` and strips its static members
+// (FieldValue/Timestamp), so `FieldValue` is undefined locally;
+// the subpath exports are unaffected. Equivalent to the namespaced access in
+// production.
+import { FieldValue, Timestamp } from "firebase-admin/firestore";
 
 admin.initializeApp();
 
 const db = admin.firestore();
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+// App Check tokens can only be minted by the real App Check backend (there is no
+// App Check emulator), so enforcing it locally would make every callable fail with
+// UNAUTHENTICATED. Disable enforcement only when running inside the emulator; in
+// production FUNCTIONS_EMULATOR is unset, so enforcement stays on.
+const ENFORCE_APP_CHECK = process.env.FUNCTIONS_EMULATOR !== "true";
 
 const SMTP2GO_API_KEY = defineSecret("SMTP2GO_API_KEY");
 const MAIL_FROM = defineSecret("MAIL_FROM");
@@ -31,8 +51,8 @@ interface InstructorDoc {
   status: InstructorStatus;
   emailVerified?: boolean;
   reviewedBy: string | null;
-  reviewedAt: admin.firestore.Timestamp | null;
-  createdAt: admin.firestore.Timestamp;
+  reviewedAt: Timestamp | null;
+  createdAt: Timestamp;
   sessionsCreatedCount: number;
   playersJoinedCount: number;
 }
@@ -59,7 +79,7 @@ function newSessionToken(): string {
 }
 
 function isTimestampExpired(ts: unknown): boolean {
-  if (!(ts instanceof admin.firestore.Timestamp)) {
+  if (!(ts instanceof Timestamp)) {
     return false;
   }
   return ts.toMillis() <= Date.now();
@@ -141,7 +161,7 @@ async function enforceRateLimit(
   }
 
   await ref.update({
-    count: admin.firestore.FieldValue.increment(1),
+    count: FieldValue.increment(1),
     updatedAt: now,
   });
 }
@@ -194,7 +214,7 @@ async function reserveEmailQuota(): Promise<boolean> {
       {
         count: current + 1,
         dayKey,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
@@ -278,7 +298,7 @@ async function generateUniqueGameCode(): Promise<string> {
 }
 
 export const ensureAdminProfile = onCall(
-  { enforceAppCheck: true, maxInstances: 100, secrets: [ADMIN_EMAIL] },
+  { enforceAppCheck: ENFORCE_APP_CHECK, maxInstances: 100, secrets: [ADMIN_EMAIL] },
   async (request) => {
     const uid = requireAuthUid(request);
     const user = await admin.auth().getUser(uid);
@@ -302,8 +322,8 @@ export const ensureAdminProfile = onCall(
       role: "admin",
       status: "approved",
       reviewedBy: uid,
-      reviewedAt: admin.firestore.FieldValue.serverTimestamp(),
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      reviewedAt: FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
       sessionsCreatedCount: 0,
       playersJoinedCount: 0,
     });
@@ -314,7 +334,7 @@ export const ensureAdminProfile = onCall(
 );
 
 export const submitInstructorApplication = onCall(
-  { enforceAppCheck: true, maxInstances: 100, secrets: [ADMIN_EMAIL, SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
+  { enforceAppCheck: ENFORCE_APP_CHECK, maxInstances: 100, secrets: [ADMIN_EMAIL, SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
   async (request) => {
     const uid = requireAuthUid(request);
     await enforceRateLimit(uid, "submitInstructorApplication", 5, 300);
@@ -347,8 +367,8 @@ export const submitInstructorApplication = onCall(
         status,
         emailVerified: isAdmin ? true : Boolean(user.emailVerified),
         reviewedBy: isAdmin ? uid : null,
-        reviewedAt: isAdmin ? admin.firestore.FieldValue.serverTimestamp() : null,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        reviewedAt: isAdmin ? FieldValue.serverTimestamp() : null,
+        createdAt: FieldValue.serverTimestamp(),
         sessionsCreatedCount: 0,
         playersJoinedCount: 0,
       },
@@ -362,7 +382,7 @@ export const submitInstructorApplication = onCall(
 );
 
 export const syncEmailVerified = onCall(
-  { enforceAppCheck: true, maxInstances: 100, secrets: [ADMIN_EMAIL, SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
+  { enforceAppCheck: ENFORCE_APP_CHECK, maxInstances: 100, secrets: [ADMIN_EMAIL, SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
   async (request) => {
     const uid = requireAuthUid(request);
     const tokenVerified = Boolean(
@@ -411,7 +431,7 @@ export const syncEmailVerified = onCall(
 );
 
 export const adminReviewInstructor = onCall(
-  { enforceAppCheck: true, maxInstances: 100, secrets: [SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
+  { enforceAppCheck: ENFORCE_APP_CHECK, maxInstances: 100, secrets: [SMTP2GO_API_KEY, MAIL_FROM, APP_BASE_URL] },
   async (request) => {
     const reviewerUid = requireAuthUid(request);
     await requireAdmin(reviewerUid);
@@ -447,7 +467,7 @@ export const adminReviewInstructor = onCall(
         role: "instructor",
         status: nextStatus,
         reviewedBy: reviewerUid,
-        reviewedAt: admin.firestore.FieldValue.serverTimestamp(),
+        reviewedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
@@ -479,7 +499,7 @@ export const adminReviewInstructor = onCall(
 );
 
 export const adminRevokeInstructor = onCall(
-  { enforceAppCheck: true, maxInstances: 100, secrets: [SMTP2GO_API_KEY, MAIL_FROM] },
+  { enforceAppCheck: ENFORCE_APP_CHECK, maxInstances: 100, secrets: [SMTP2GO_API_KEY, MAIL_FROM] },
   async (request) => {
     const reviewerUid = requireAuthUid(request);
     await requireAdmin(reviewerUid);
@@ -505,7 +525,7 @@ export const adminRevokeInstructor = onCall(
       {
         status: "revoked",
         reviewedBy: reviewerUid,
-        reviewedAt: admin.firestore.FieldValue.serverTimestamp(),
+        reviewedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
@@ -524,7 +544,7 @@ export const adminRevokeInstructor = onCall(
   }
 );
 
-export const adminDeleteInstructor = onCall({ enforceAppCheck: true, maxInstances: 100 }, async (request) => {
+export const adminDeleteInstructor = onCall({ enforceAppCheck: ENFORCE_APP_CHECK, maxInstances: 100 }, async (request) => {
   const reviewerUid = requireAuthUid(request);
   await requireAdmin(reviewerUid);
 
@@ -565,7 +585,7 @@ export const adminDeleteInstructor = onCall({ enforceAppCheck: true, maxInstance
   return { deleted: true };
 });
 
-export const createSession = onCall({ enforceAppCheck: true, maxInstances: 100 }, async (request) => {
+export const createSession = onCall({ enforceAppCheck: ENFORCE_APP_CHECK, maxInstances: 100 }, async (request) => {
   const uid = requireAuthUid(request);
   const instructorSnap = await requireApprovedInstructor(uid);
   const instructor = instructorSnap.data() as InstructorDoc;
@@ -574,12 +594,12 @@ export const createSession = onCall({ enforceAppCheck: true, maxInstances: 100 }
   const notes = typeof request.data?.notes === "string" ? request.data.notes.trim() : "";
 
   const code = await generateUniqueGameCode();
-  const now = admin.firestore.Timestamp.now();
-  const expiresAt = admin.firestore.Timestamp.fromMillis(now.toMillis() + THIRTY_DAYS_MS);
+  const now = Timestamp.now();
+  const expiresAt = Timestamp.fromMillis(now.toMillis() + THIRTY_DAYS_MS);
 
   await db.collection("games").doc(code).set({
     status: "lobby",
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    createdAt: FieldValue.serverTimestamp(),
     expiresAt,
     ownerInstructorId: uid,
     ownerInstructorEmail: instructor.email,
@@ -590,7 +610,7 @@ export const createSession = onCall({ enforceAppCheck: true, maxInstances: 100 }
 
   await instructorSnap.ref.set(
     {
-      sessionsCreatedCount: admin.firestore.FieldValue.increment(1),
+      sessionsCreatedCount: FieldValue.increment(1),
     },
     { merge: true }
   );
@@ -598,7 +618,7 @@ export const createSession = onCall({ enforceAppCheck: true, maxInstances: 100 }
   return { gameCode: code };
 });
 
-export const deleteSession = onCall({ enforceAppCheck: true, maxInstances: 100 }, async (request) => {
+export const deleteSession = onCall({ enforceAppCheck: ENFORCE_APP_CHECK, maxInstances: 100 }, async (request) => {
   const uid = requireAuthUid(request);
   const instructorSnap = await requireApprovedInstructor(uid);
   const instructor = instructorSnap.data() as InstructorDoc;
@@ -622,7 +642,7 @@ export const deleteSession = onCall({ enforceAppCheck: true, maxInstances: 100 }
   return { deleted: true };
 });
 
-export const joinOrResumePlayer = onCall({ enforceAppCheck: true, maxInstances: 100 }, async (request) => {
+export const joinOrResumePlayer = onCall({ enforceAppCheck: ENFORCE_APP_CHECK, maxInstances: 100 }, async (request) => {
   const callerUid = requireAuthUid(request);
   await enforceRateLimit(callerUid, "joinOrResumePlayer", 10, 60);
   const gameCode = parseGameCode(request.data?.gameCode);
@@ -683,7 +703,7 @@ export const joinOrResumePlayer = onCall({ enforceAppCheck: true, maxInstances: 
       const token = newSessionToken();
       tx.update(playerRef, {
         sessionTokenHash: hashToken(token),
-        lastHeartbeatAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastHeartbeatAt: FieldValue.serverTimestamp(),
       });
 
       payload = {
@@ -699,10 +719,10 @@ export const joinOrResumePlayer = onCall({ enforceAppCheck: true, maxInstances: 
     const commonPlayerFields = {
       name,
       normalizedName,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
       isRobot: false,
       sessionTokenHash: hashToken(token),
-      lastHeartbeatAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastHeartbeatAt: FieldValue.serverTimestamp(),
       removedAt: null,
       removedBy: null,
     };
@@ -717,10 +737,10 @@ export const joinOrResumePlayer = onCall({ enforceAppCheck: true, maxInstances: 
       });
       tx.set(nameRef, {
         playerId: playerRef.id,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: FieldValue.serverTimestamp(),
       });
       tx.update(gameRef, {
-        humanJoinCount: admin.firestore.FieldValue.increment(1),
+        humanJoinCount: FieldValue.increment(1),
       });
 
       const ownerInstructorId = gameData.ownerInstructorId;
@@ -728,7 +748,7 @@ export const joinOrResumePlayer = onCall({ enforceAppCheck: true, maxInstances: 
         tx.set(
           db.collection("instructors").doc(ownerInstructorId),
           {
-            playersJoinedCount: admin.firestore.FieldValue.increment(1),
+            playersJoinedCount: FieldValue.increment(1),
           },
           { merge: true }
         );
@@ -789,7 +809,7 @@ export const joinOrResumePlayer = onCall({ enforceAppCheck: true, maxInstances: 
 
     tx.set(nameRef, {
       playerId: playerRef.id,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
     });
 
     tx.update(selectedTeam.ref, {
@@ -800,7 +820,7 @@ export const joinOrResumePlayer = onCall({ enforceAppCheck: true, maxInstances: 
     });
 
     tx.update(gameRef, {
-      humanJoinCount: admin.firestore.FieldValue.increment(1),
+      humanJoinCount: FieldValue.increment(1),
     });
 
     const ownerInstructorId = gameData.ownerInstructorId;
@@ -808,7 +828,7 @@ export const joinOrResumePlayer = onCall({ enforceAppCheck: true, maxInstances: 
       tx.set(
         db.collection("instructors").doc(ownerInstructorId),
         {
-          playersJoinedCount: admin.firestore.FieldValue.increment(1),
+          playersJoinedCount: FieldValue.increment(1),
         },
         { merge: true }
       );
@@ -872,7 +892,7 @@ async function validatePlayerToken(params: {
   };
 }
 
-export const heartbeatPlayer = onCall({ enforceAppCheck: true, maxInstances: 100 }, async (request) => {
+export const heartbeatPlayer = onCall({ enforceAppCheck: ENFORCE_APP_CHECK, maxInstances: 100 }, async (request) => {
   const callerUid = requireAuthUid(request);
   await enforceRateLimit(callerUid, "heartbeatPlayer", 60, 60);
   const gameCode = parseGameCode(request.data?.gameCode);
@@ -886,13 +906,13 @@ export const heartbeatPlayer = onCall({ enforceAppCheck: true, maxInstances: 100
 
   const validated = await validatePlayerToken({ gameCode, playerId, sessionToken });
   await validated.playerRef.update({
-    lastHeartbeatAt: admin.firestore.FieldValue.serverTimestamp(),
+    lastHeartbeatAt: FieldValue.serverTimestamp(),
   });
 
   return { ok: true, serverTime: Date.now() };
 });
 
-export const submitPlayerOrder = onCall({ enforceAppCheck: true, maxInstances: 100 }, async (request) => {
+export const submitPlayerOrder = onCall({ enforceAppCheck: ENFORCE_APP_CHECK, maxInstances: 100 }, async (request) => {
   const callerUid = requireAuthUid(request);
   await enforceRateLimit(callerUid, "submitPlayerOrder", 30, 60);
   const gameCode = parseGameCode(request.data?.gameCode);
@@ -940,12 +960,90 @@ export const submitPlayerOrder = onCall({ enforceAppCheck: true, maxInstances: 1
     });
 
     tx.update(validated.playerRef, {
-      lastHeartbeatAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastHeartbeatAt: FieldValue.serverTimestamp(),
     });
   });
 
   return { ok: true };
 });
+
+// ── Server-side round engine ─────────────────────────────────────────────────
+//
+// Authoritative round advancement. Previously this ran in the HOST's browser
+// (HostLobby.tsx auto-advance loop): the host computed robot orders + simulated
+// each week and wrote the result. That made the instructor's tab a required
+// runtime — close it and every team froze. Here the same engine runs in a
+// Firestore-triggered Cloud Function instead, so games advance with no host
+// tab open (verified: this is the fix for the classroom-integration plan).
+//
+// Trigger cascade:
+//  • A human's `submitPlayerOrder` writes `ordersSubmitted[role]` on the team →
+//    this trigger fires → if every human role has submitted, we advance one week.
+//  • Advancing writes the team again → the trigger re-fires. For an all-robot
+//    team (or robot-filled seats) it keeps advancing until `currentWeek > nWeeks`,
+//    then returns without writing, so the cascade self-terminates. For a team
+//    with humans, the post-advance state has no submissions yet → no write → stop.
+//  • Each write triggers at most one more evaluation, and evaluation only writes
+//    when it advances, so the cascade is bounded by nWeeks.
+//
+// The advance is transactional and idempotent on `currentWeek`: if two
+// evaluations race (e.g. the last submit and a kick-to-bot), whichever commits
+// first advances the week and the other sees the new week and no-ops.
+async function advanceTeamIfReady(gameCode: string, teamId: string): Promise<void> {
+  const gameRef = db.collection("games").doc(gameCode);
+  await db.runTransaction(async (tx) => {
+    // All reads first (Firestore requires reads before writes).
+    const gameSnap = await tx.get(gameRef);
+    if (!gameSnap.exists) return;
+    const gameData = gameSnap.data() as Record<string, unknown>;
+    if (gameData.status !== "in_progress") return;
+    const config = gameData.config as EngineGameConfig | undefined;
+    if (!config || typeof config.nWeeks !== "number") return;
+
+    const teamsSnap = await tx.get(gameRef.collection("teams"));
+    const thisDoc = teamsSnap.docs.find((d) => d.id === teamId);
+    if (!thisDoc) return;
+
+    const team = thisDoc.data() as unknown as EngineTeamState;
+    team.id = teamId;
+    if (team.currentWeek > config.nWeeks) return; // already complete
+    if (!teamIsReadyToAdvance(team)) return; // waiting on a human
+
+    const orders = computeOrdersForWeek(team, config, team.pendingOrders || {});
+    const { nextTeam } = simulateWeek(team, config, orders);
+    nextTeam.pendingOrders = {};
+    nextTeam.ordersSubmitted = {};
+
+    const teamRef = gameRef.collection("teams").doc(teamId);
+    tx.set(teamRef, nextTeam as unknown as Record<string, unknown>);
+
+    // When this team finishes its final week, end the session if every team is done.
+    if (nextTeam.currentWeek > config.nWeeks) {
+      const allDone = teamsSnap.docs.every((d) => {
+        if (d.id === teamId) return true; // this one just finished
+        const cw = Number((d.data() as Record<string, unknown>).currentWeek ?? 0);
+        return cw > config.nWeeks;
+      });
+      if (allDone) {
+        tx.update(gameRef, { status: "ended", endedAt: FieldValue.serverTimestamp() });
+      }
+    }
+  });
+}
+
+export const onTeamWrite = onDocumentWritten(
+  { document: "games/{gameCode}/teams/{teamId}", region: "us-central1" },
+  async (event) => {
+    const after = event.data?.after;
+    if (!after || !after.exists) return; // team deleted
+    const { gameCode, teamId } = event.params as { gameCode: string; teamId: string };
+    try {
+      await advanceTeamIfReady(gameCode, teamId);
+    } catch (err) {
+      logger.error("advanceTeamIfReady failed", { gameCode, teamId, err });
+    }
+  }
+);
 
 interface BudgetNotificationPayload {
   costAmount?: number;
@@ -1083,7 +1181,7 @@ export const cleanupOrphanAuthUsers = onSchedule(
 });
 
 export const cleanupExpiredSessions = onSchedule("every monday 03:00", async () => {
-  const now = admin.firestore.Timestamp.now();
+  const now = Timestamp.now();
   let deleted = 0;
 
   while (true) {

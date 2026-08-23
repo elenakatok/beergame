@@ -36,6 +36,12 @@ import { exportElementToPdf } from "../utils/exportPdf";
 const HOST_GAME_CODE_KEY = "beerGame_host_gameCode";
 const ONLINE_THRESHOLD_MS = 90_000;
 
+// Round advancement now runs server-side (functions: onTeamWrite/advanceTeamIfReady),
+// so the host browser must NOT also advance — otherwise every week would be
+// simulated twice. The client auto-advance loop below is disabled behind this flag.
+// The host page stays a read-only monitor. See Beergame_Classroom_Integration_Spec.
+const SERVER_SIDE_ENGINE = true;
+
 interface Props {
   userUid: string;
   instructorEmail: string;
@@ -177,6 +183,7 @@ const HostLobby: React.FC<Props> = ({ userUid, instructorEmail, isAdmin }) => {
   }, [gameCode, gameStatus, config]);
 
   useEffect(() => {
+    if (SERVER_SIDE_ENGINE) return; // server owns round advancement
     if (!gameCode || !config || gameStatus !== "in_progress") return;
     const run = async () => {
       for (const team of teams) {
