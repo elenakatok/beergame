@@ -33,6 +33,7 @@ import {
   Role,
   GameConfig,
 } from "./engine";
+import { pickTeamName } from "./teamNames";
 
 const CLASSROOM_PROVISION_SECRET = defineSecret("CLASSROOM_PROVISION_SECRET");
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -168,12 +169,19 @@ export const provisionClassSession = onRequest(
       groupId: string;
     }> = [];
 
+    // Friendly, on-theme team names ("Hoppy Campers") instead of the raw matcher group
+    // UUID. `usedTeamNames` keeps them distinct across the groups in this call. The real
+    // matcher group id is preserved separately (see `groupId` on each seat below) — it is
+    // NOT the display name, and grade attribution keys on classroomStudentId regardless.
+    const usedTeamNames = new Set<string>();
+
     groups.forEach((group, gi) => {
       const teamId = `team${gi + 1}`;
-      const teamName =
+      const teamName = pickTeamName(gi, usedTeamNames);
+      const realGroupId =
         typeof group.groupId === "string" && group.groupId.trim()
           ? group.groupId.trim()
-          : `Group ${gi + 1}`;
+          : `group-${gi + 1}`;
       const team = createInitialTeamState(teamId, teamName);
 
       const members = Array.isArray(group.members) ? group.members.slice(0, ROLES.length) : [];
@@ -216,7 +224,7 @@ export const provisionClassSession = onRequest(
         team.stages[role].playerName = displayName;
         team.stages[role].isRobot = false;
         team.humanCount += 1;
-        seats.push({ studentId, role, teamId, playerId: playerRef.id, groupId: teamName });
+        seats.push({ studentId, role, teamId, playerId: playerRef.id, groupId: realGroupId });
       });
 
       // Bot-fill any seat with no present student (product decision #8).
