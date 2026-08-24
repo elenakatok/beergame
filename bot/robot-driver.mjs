@@ -26,9 +26,32 @@
 // Targets the DEPLOYED game by default (beergame-mygames-live). Override the host
 // pieces with --project / --apikey / --fnbase if pointing at another deployment.
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
 const args = parseArgs(process.argv.slice(2));
 const PROJECT = args.project || "beergame-mygames-live";
-const API_KEY = args.apikey || "AIzaSyBjZBWU78dlscQ9cSnr46OM788SgHhfPaM"; // public web key
+const API_KEY = resolveApiKey(); // Firebase WEB key — resolved from config, never hardcoded
+
+// The Firebase web API key is public by design (it ships in the deployed web bundle;
+// data access is guarded by Firestore rules + Auth, not this key). We still don't
+// hardcode it — that keeps it out of the repo / secret scanners. Order of resolution:
+// --apikey, then env FIREBASE_WEB_API_KEY, then the game's local .env.production.
+function resolveApiKey() {
+  if (typeof args.apikey === "string" && args.apikey) return args.apikey;
+  if (process.env.FIREBASE_WEB_API_KEY) return process.env.FIREBASE_WEB_API_KEY;
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const env = readFileSync(resolve(here, "../.env.production"), "utf8");
+    const m = env.match(/^VITE_FIREBASE_API_KEY=(.+)$/m);
+    if (m && m[1].trim()) return m[1].trim();
+  } catch { /* fall through */ }
+  throw new Error(
+    "web API key not found — pass --apikey <key>, set FIREBASE_WEB_API_KEY, " +
+    "or ensure games/beergame/.env.production has VITE_FIREBASE_API_KEY"
+  );
+}
 const FN_BASE = args.fnbase || `https://us-central1-${PROJECT}.cloudfunctions.net`;
 const FS_BASE = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
 const IDP = `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${API_KEY}`;
