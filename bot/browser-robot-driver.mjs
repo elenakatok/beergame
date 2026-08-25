@@ -25,8 +25,28 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { createRequire } from 'node:module'
+import { execSync } from 'node:child_process'
 const require = createRequire(import.meta.url)
 const { chromium } = require('playwright')
+
+// ── monitor auto-detection (macOS) ───────────────────────────────────────────
+// Find the LARGEST display and return it in CHROME window coords (origin = the primary
+// display's TOP-left, Y increasing downward). NSScreen reports frames in Cocoa coords
+// (primary BOTTOM-left, Y up), so the Y axis is flipped: chromeY = primaryH − (nsY + nsH).
+// This puts the bot windows on the big monitor without anyone typing coordinates. Returns
+// null off macOS or if detection fails — the caller then falls back to defaults/flags.
+function detectLargestDisplay() {
+  try {
+    const jxa = 'ObjC.import("AppKit"); var s=$.NSScreen.screens; var o=[]; for(var i=0;i<s.count;i++){var f=s.objectAtIndex(i).frame; o.push([f.origin.x,f.origin.y,f.size.width,f.size.height])}; JSON.stringify(o)'
+    const frames = JSON.parse(execSync(`osascript -l JavaScript -e '${jxa}'`, { encoding: 'utf8' }).trim())
+    if (!Array.isArray(frames) || frames.length === 0) return null
+    const primary = frames.find((f) => f[0] === 0 && f[1] === 0) || frames[0]
+    const primaryH = primary[3]
+    let best = frames[0]
+    for (const f of frames) if (f[2] * f[3] > best[2] * best[3]) best = f
+    return { x: Math.round(best[0]), y: Math.round(primaryH - (best[1] + best[3])), w: Math.round(best[2]), h: Math.round(best[3]) }
+  } catch { return null }
+}
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 function parseArgs(argv) {
@@ -42,11 +62,18 @@ const INSTANCE = args.instance
 const SEATS = Math.max(1, Math.min(16, Number(args.seats) || 4))
 const PACE = String(args.pace || 'watch')
 const LAUNCHER = String(args.launcher || 'http://localhost:5180').replace(/\/$/, '')
-const [SCREEN_W, SCREEN_H] = String(args.screen || '1920x1080').split('x').map(Number)
-// Top-left of the monitor to tile onto (Chrome's window coords span all displays). Set
-// --origin "x,y" (or ROBOT_ORIGIN via the launcher) to your large monitor's top-left; e.g. a
-// monitor to the LEFT of the primary is negative x, to the RIGHT is x ≥ primary width.
-const [ORIGIN_X, ORIGIN_Y] = String(args.origin || '0,0').split(',').map(Number)
+
+// Placement: explicit --screen / --origin win; otherwise AUTO-DETECT the largest monitor and
+// tile there; otherwise fall back to the primary at 1920x1080. So by default the windows land
+// on the big monitor with nothing to configure.
+const detected = (args.screen || args.origin) ? null : detectLargestDisplay()
+const [SCREEN_W, SCREEN_H] = args.screen
+  ? String(args.screen).split('x').map(Number)
+  : detected ? [detected.w, detected.h] : [1920, 1080]
+const [ORIGIN_X, ORIGIN_Y] = args.origin
+  ? String(args.origin).split(',').map(Number)
+  : detected ? [detected.x, detected.y] : [0, 0]
+if (detected) console.log(`Tiling onto the largest monitor: ${SCREEN_W}x${SCREEN_H} at (${ORIGIN_X},${ORIGIN_Y})`)
 
 if (!INSTANCE || INSTANCE === true) {
   console.error('ERROR: --instance <matcherInstanceId> is required.')
@@ -60,11 +87,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const think = () => sleep(THINK.min + Math.random() * (THINK.max - THINK.min))
 
 // ── window tiling ──────────────────────────────────────────────────────────────
-function tile(index, total) {
-  const cols = Math.ceil(Math.sqrt(total))
-  const w = Math.floor(SCREEN_W / cols)
-  const h = Math.floor(SCREEN_H / Math.ceil(total / cols))
-  return { x: ORIGIN_X + (index % cols) * w, y: ORIGIN_Y + Math.floor(index / cols) * h, width: w, height: h }
+// Aspect-aware grid: on a wide monitor prefer more COLUMNS so each window is a usable shape
+// (a plain ceil(sqrt) makes a 4×4 grid on an ultrawide → very short windows the game can't
+// render into). cols ≈ sqrt(total × screenAspect).
+const COLS = Math.max(1, Math.min(SEATS, Math.round(Math.sqrt(SEATS * (SCREEN_W / SCREEN_H)))))
+const ROWS = Math.ceil(SEATS / COLS)
+function tile(index) {
+  const w = Math.floor(SCREEN_W / COLS)
+  const h = Math.floor(SCREEN_H / ROWS)
+  return { x: ORIGIN_X + (index % COLS) * w, y: ORIGIN_Y + Math.floor(index / COLS) * h, width: w, height: h }
 }
 
 // ⚠ ANTI-THROTTLING FLAGS — load-bearing. With many tiled windows most are in the
@@ -198,7 +229,7 @@ async function main() {
   const browsers = []
   const runs = []
   for (let i = 0; i < SEATS; i++) {
-    const box = tile(i, SEATS)
+    const box = tile(i)
     // ⚠ channel:'chrome' uses the system Google Chrome, NOT Playwright's bundled Chromium.
     // The Beer Game's Playwright (1.59) wants a Chromium build that isn't in the shared
     // ms-playwright cache (the other games run 1.62 → chromium-1234, which IS installed), so
