@@ -238,9 +238,19 @@ async function runSeat(page, label) {
   await playBeerGame(page, label)
 }
 
+// ⚠ FIT THE WHOLE BEER GAME IN A SMALL TILED WINDOW. The play screen is ~1000×860 CSS px; a
+// tiled window is far smaller, so at 100% the animation + Submit button render BELOW the fold
+// (Elena: zooming to ~67% makes them visible). A shrunk device-scale-factor gives the page a
+// LARGER logical viewport (cssViewport = windowPx / dsf) so the full screen lays out and is
+// simply displayed small — the automation analogue of Cmd-minus. Computed from the tile size
+// so the whole design fits; clamped so text stays legible.
+const box0 = tile(0)
+const DSF = Math.max(0.35, Math.min(1, Math.min(box0.width / 1000, (box0.height - 90) / 860)))
+
 // ── main ───────────────────────────────────────────────────────────────────────
 async function main() {
-  console.log(`Beer Game BROWSER robots: ${SEATS} seat(s) on matcher instance ${INSTANCE} (pace=${PACE})`)
+  console.log(`Beer Game BROWSER robots: ${SEATS} seat(s) on matcher instance ${INSTANCE} (pace=${PACE}); ` +
+    `grid ${COLS}×${ROWS}, window ${box0.width}×${box0.height}, scale ${DSF.toFixed(2)}`)
   const browsers = []
   const runs = []
   for (let i = 0; i < SEATS; i++) {
@@ -253,10 +263,17 @@ async function main() {
     const browser = await chromium.launch({
       headless: false,
       channel: 'chrome',
-      args: [`--window-position=${box.x},${box.y}`, `--window-size=${box.width},${box.height}`, ...NO_THROTTLE],
+      args: [
+        `--window-position=${box.x},${box.y}`,
+        `--window-size=${box.width},${box.height}`,
+        `--force-device-scale-factor=${DSF.toFixed(2)}`,
+        ...NO_THROTTLE,
+      ],
     })
     browsers.push(browser)
-    const page = await browser.newPage({ viewport: { width: box.width, height: box.height - 90 } })
+    // viewport:null → use the real window size; with the shrunk device scale the CSS viewport
+    // is bigger, so the whole Beer Game screen fits without clipping.
+    const page = await browser.newPage({ viewport: null })
     const url = await studentUrlFor(i)
     await page.goto(url, { waitUntil: 'domcontentloaded' })
     runs.push(runSeat(page, `seat ${i}`).catch((e) => console.error(`[seat ${i}]`, e.message)))
