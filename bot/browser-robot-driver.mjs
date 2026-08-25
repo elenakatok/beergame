@@ -177,10 +177,37 @@ async function driveMatcherUntilHandoff(page, label, timeoutMs = 15 * 60 * 1000)
 //   READ  the incoming order from the "Incoming Orders / Demand" card (first .pv-card).
 //   ACT   type it into input.pv-order-input and click button.pv-order-btn ("Submit order").
 //
-// Strategy: order = incoming order (pass-through). If the incoming value can't be read, fall
-// back to a steady 4 — a valid order that keeps the game moving rather than stalling the seat.
+// Strategy: HUMAN-LIKE, not pass-through — otherwise every graph is a flat line and there is
+// no bullwhip to see. Real Beer Game players anchor on the demand they observe and then
+// OVER-REACT to changes (panic-order when incoming jumps, cut back when it falls), while
+// under-accounting for orders already in the pipeline — the anchor-and-adjust behaviour
+// (Sterman) that manufactures the bullwhip. Each seat gets its own personality (how strongly
+// it over-reacts, how noisy it is) so the four roles diverge and the classic amplifying
+// oscillation appears upstream. If the incoming value can't be read, fall back to a steady 4.
 // ═══════════════════════════════════════════════════════════════════════════════
 const DEFAULT_ORDER = 4
+
+/** One seat's stable "playing style", drawn once per game. */
+function makePersonality() {
+  return {
+    kappa: 0.4 + Math.random() * 1.4, // over-reaction to a change in incoming demand [0.4, 1.8]
+    noise: 0.6 + Math.random() * 1.8, // random jitter amplitude [0.6, 2.4]
+    bias: 0.3 + Math.random() * 0.5,  // upward lean (people tend to over-order) [0.3, 0.8]
+  }
+}
+
+/**
+ * A human-ish order: anchor on this week's incoming demand, add an over-reaction to how much
+ * it CHANGED since last week, plus upward-biased noise. Clamped ≥ 0 and to a sane ceiling so a
+ * runaway panic can't type an absurd value. `state.last` carries the previous incoming.
+ */
+function humanOrder(incoming, state, p) {
+  const anchor = incoming
+  const change = incoming - (state.last ?? incoming)
+  const jitter = (Math.random() - (1 - p.bias)) * 2 * p.noise
+  state.last = incoming
+  return Math.max(0, Math.min(99, Math.round(anchor + p.kappa * change + jitter)))
+}
 
 async function readIncomingOrder(page) {
   // The first .pv-card is "Incoming Orders / Demand"; its number is the incoming order.
@@ -205,6 +232,8 @@ async function playBeerGame(page, label) {
   const start = Date.now()
   const MAX_MS = 60 * 60 * 1000
   let lastIdleLog = 0
+  const persona = makePersonality()        // this seat's over-reaction style, fixed for the game
+  const demand = { last: null }            // remembers last week's incoming, for the change term
   while (Date.now() - start < MAX_MS) {
     if (await isGameOver(page)) { console.log(`[${label}] Beer Game over — ${submissions} order(s) submitted`); return }
 
@@ -221,7 +250,7 @@ async function playBeerGame(page, label) {
     if (wantsOrder) {
       await think()
       const incoming = await readIncomingOrder(page)
-      const order = incoming != null && Number.isFinite(incoming) ? incoming : DEFAULT_ORDER
+      const order = incoming != null && Number.isFinite(incoming) ? humanOrder(incoming, demand, persona) : DEFAULT_ORDER
       await page.locator('input.pv-order-input').first().fill(String(order)).catch(() => {})
       await btn.click({ timeout: 8000 }).catch(() => {}) // waits for the fill to enable the button
       submissions++
