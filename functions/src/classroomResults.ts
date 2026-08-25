@@ -96,6 +96,14 @@ export const onGameEndedPushResults = onDocumentWritten(
     if (afterData.status !== "ended" || beforeData?.status === "ended") return;
     if (afterData.source !== "classroom") return;
 
+    // ⚠ GRADING MOVED TO THE MATCHER. A matcher session's teams live in SEPARATE Beer Game
+    // games, so this per-game push can only ever see one team and cannot compute the
+    // cross-team z-score. The matcher's scoreAndRecord reads every team's cost (getClassResults)
+    // and pushes the z-scored gradebook itself. This per-game participation push would CLOBBER
+    // that (a late game-end overwriting the matcher's z-score), so it is disabled by default.
+    // Set BEERGAME_SELF_GRADE=true only if the Beer Game is ever hosted WITHOUT the matcher.
+    if (process.env.BEERGAME_SELF_GRADE !== "true") return;
+
     const gameCode = (event.params as { gameCode: string }).gameCode;
     const instanceId =
       typeof afterData.classroomInstanceId === "string" && afterData.classroomInstanceId

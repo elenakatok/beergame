@@ -333,3 +333,65 @@ export const resumeClassPlayer = onCall(
     };
   }
 );
+
+/**
+ * getClassResults — server-to-server (same secret as provisioning). Returns per-team and
+ * per-player COSTS for a classroom session, so the matcher can pool costs across all its teams
+ * (which live in separate games) and compute a cross-team z-score + write the gradebook. This
+ * is read-only and does NOT end the session or push anything itself — grading is the matcher's
+ * job now (the auto-push on end is disabled; see classroomResults.ts).
+ */
+export const getClassResults = onRequest(
+  { secrets: [CLASSROOM_PROVISION_SECRET], cors: true, maxInstances: 20 },
+  async (req, res) => {
+    if (req.method !== "POST") { res.status(405).json({ error: "method-not-allowed" }); return; }
+    if (!bearerMatches(req.headers.authorization, CLASSROOM_PROVISION_SECRET.value())) {
+      res.status(401).json({ error: "unauthorized" }); return;
+    }
+    const gameCode = parseGameCode((req.body ?? {}).gameCode);
+    const gameRef = db().collection("games").doc(gameCode);
+    const [gameSnap, teamsSnap, playersSnap] = await Promise.all([
+      gameRef.get(),
+      gameRef.collection("teams").get(),
+      gameRef.collection("players").get(),
+    ]);
+    if (!gameSnap.exists) { res.status(404).json({ error: "not-found" }); return; }
+
+    // Each team's total cost + role → individual cost (sum of that stage's weekly cost).
+    const teams = teamsSnap.docs.map((d) => {
+      const t = d.data() as Record<string, unknown>;
+      const stages = (t.stages ?? {}) as Record<string, { history?: Array<{ cost?: number }> }>;
+      const costByRole: Record<string, number> = {};
+      for (const role of ROLES) {
+        costByRole[role] = (stages[role]?.history ?? []).reduce((s, h) => s + Number(h.cost ?? 0), 0);
+      }
+      return {
+        teamId: d.id,
+        teamName: typeof t.name === "string" ? t.name : d.id,
+        teamCost: Number(t.totalCost ?? 0),
+        costByRole,
+      };
+    });
+    const teamById = new Map(teams.map((t) => [t.teamId, t]));
+
+    // One row per HUMAN player, with the classroom studentId, role, and their individual cost.
+    const players = playersSnap.docs
+      .map((d) => d.data() as Record<string, unknown>)
+      .filter((d) => typeof d.classroomStudentId === "string" && d.isRobot !== true)
+      .map((d) => {
+        const team = typeof d.teamId === "string" ? teamById.get(d.teamId) : undefined;
+        const role = typeof d.role === "string" ? d.role : null;
+        return {
+          studentId: d.classroomStudentId as string,
+          role,
+          teamId: (d.teamId as string) ?? null,
+          teamName: team?.teamName ?? null,
+          teamCost: team?.teamCost ?? null,
+          individualCost: role && team ? (team.costByRole[role] ?? null) : null,
+          participated: d.lastHeartbeatAt != null,
+        };
+      });
+
+    res.json({ ok: true, gameCode, teams, players });
+  }
+);
