@@ -26,8 +26,26 @@
 
 import { createRequire } from 'node:module'
 import { execSync } from 'node:child_process'
-const require = createRequire(import.meta.url)
-const { chromium } = require('playwright')
+import { fileURLToPath } from 'node:url'
+import { dirname, resolve } from 'node:path'
+const __dirname = dirname(fileURLToPath(import.meta.url))
+
+// ⚠ LOAD PLAYWRIGHT FROM A SIBLING GAME whose bundled Chromium is actually installed in the
+// shared ms-playwright cache. Two reasons: (1) the Beer Game's own Playwright (1.59) wants a
+// Chromium build that ISN'T installed; (2) system Chrome (channel:'chrome') renders the headed
+// windows BLANK WHITE once they're backgrounded on macOS. The sibling games run 16 headed
+// bundled-Chromium windows reliably, so borrow their Playwright and use its bundled browser.
+function loadChromium() {
+  for (const sib of ['infoshare', 'winemaster', 'grays2', 'crisis', 'saa']) {
+    try {
+      const pw = createRequire(resolve(__dirname, `../../${sib}/package.json`))('playwright')
+      if (pw?.chromium) return { chromium: pw.chromium, channel: undefined, from: sib }
+    } catch { /* try next sibling */ }
+  }
+  // Last resort: our own Playwright via system Chrome (may render white when backgrounded).
+  return { chromium: createRequire(import.meta.url)('playwright').chromium, channel: 'chrome', from: 'system-chrome' }
+}
+const { chromium, channel: CHANNEL, from: PW_FROM } = loadChromium()
 
 // ── monitor auto-detection (macOS) ───────────────────────────────────────────
 // Find the LARGEST display and return it in CHROME window coords (origin = the primary
@@ -183,39 +201,29 @@ async function isGameOver(page) {
 }
 
 async function playBeerGame(page, label) {
-  // Shrink the whole Beer Game so it fits this small tiled window (the analogue of Cmd-minus)
-  // — the animation + Submit button are otherwise below the fold and never seen/reached. Set
-  // on <html> after the redirect landed us on the Beer Game; it persists (the SPA never
-  // navigates again during play). Re-applied cheaply each loop in case a remount clears it.
-  const applyZoom = () => page.evaluate((z) => { document.documentElement.style.zoom = String(z) }, ZOOM).catch(() => {})
-  await applyZoom()
-
   let submissions = 0
   const start = Date.now()
   const MAX_MS = 60 * 60 * 1000
   let lastIdleLog = 0
   while (Date.now() - start < MAX_MS) {
     if (await isGameOver(page)) { console.log(`[${label}] Beer Game over — ${submissions} order(s) submitted`); return }
-    await applyZoom() // keep the fit even if the page ever remounts
 
     const btn = page.locator('button.pv-order-btn').first()
     if (await btn.count() === 0) { await sleep(POLL_MS); continue }
     const btnText = (await btn.innerText().catch(() => '')) || ''
-    const ready = /submit order/i.test(btnText) && !(await btn.isDisabled().catch(() => true))
+    // ⚠ "Submit order" TEXT (canOrder) is the cue to act — do NOT gate on the button being
+    // enabled: the Beer Game DISABLES it until a valid number is typed (hasValidOrder), so a
+    // ready seat sits at "Submit order" DISABLED forever if we wait for enabled. Fill first
+    // (that enables it), then click — Playwright's click waits for the button to be actionable.
+    const wantsOrder = /submit order/i.test(btnText)
     const week = await readWeek(page)
 
-    // ⚠ THE BUTTON IS THE TRUTH — no week guard. The button reads "Submit order" ONLY when
-    // this seat can and must submit (canOrder, not yet submitted). Submit whenever it does.
-    // If a click doesn't register the button stays "Submit order" and the next loop retries;
-    // once submitted the button leaves "Submit order" until the next week. So this is
-    // self-correcting and can never falsely skip a week (the earlier lastWeek guard did:
-    // a click during "Please wait…" looked like it landed and blocked the real submit).
-    if (ready) {
+    if (wantsOrder) {
       await think()
       const incoming = await readIncomingOrder(page)
       const order = incoming != null && Number.isFinite(incoming) ? incoming : DEFAULT_ORDER
       await page.locator('input.pv-order-input').first().fill(String(order)).catch(() => {})
-      await btn.click().catch(() => {})
+      await btn.click({ timeout: 8000 }).catch(() => {}) // waits for the fill to enable the button
       submissions++
       console.log(`[${label}] week ${week ?? '?'}: ordered ${order} (incoming ${incoming ?? '?'})`)
       await sleep(1500) // let the click register before re-reading the button
@@ -242,30 +250,23 @@ async function runSeat(page, label) {
 }
 
 // ⚠ FIT THE WHOLE BEER GAME IN A SMALL TILED WINDOW. The play screen is ~1000×860 CSS px; a
-// tiled window is far smaller, so at 100% the animation + Submit button render BELOW the fold
-// (Elena: zooming to ~67% makes them visible). We shrink the page with CSS `zoom` (applied to
-// <html> once we're on the Beer Game — see playBeerGame), which is the automation analogue of
-// Cmd-minus. NOT --force-device-scale-factor + viewport:null: that renders the window blank
-// white in headed Chrome even though the DOM works. Computed from the tile size; clamped.
+// The tiled windows are small, so the play screen may be clipped when watching — but the bot
+// interacts through Playwright, which scrolls elements into view, so clipping does not stop it
+// from ordering. (An automatic content-fit was tried via CSS zoom / device-scale-factor and
+// caused blank-white or broken layout in headed Chrome; dropped in favour of just playing.)
 const box0 = tile(0)
-const ZOOM = Math.max(0.4, Math.min(1, Math.min(box0.width / 1000, (box0.height - 90) / 860)))
 
 // ── main ───────────────────────────────────────────────────────────────────────
 async function main() {
   console.log(`Beer Game BROWSER robots: ${SEATS} seat(s) on matcher instance ${INSTANCE} (pace=${PACE}); ` +
-    `grid ${COLS}×${ROWS}, window ${box0.width}×${box0.height}, scale ${DSF.toFixed(2)}`)
+    `grid ${COLS}×${ROWS}, window ${box0.width}×${box0.height}, playwright=${PW_FROM}`)
   const browsers = []
   const runs = []
   for (let i = 0; i < SEATS; i++) {
     const box = tile(i)
-    // ⚠ channel:'chrome' uses the system Google Chrome, NOT Playwright's bundled Chromium.
-    // The Beer Game's Playwright (1.59) wants a Chromium build that isn't in the shared
-    // ms-playwright cache (the other games run 1.62 → chromium-1234, which IS installed), so
-    // the bundled path 404s with "Executable doesn't exist". Using the installed Chrome
-    // sidesteps the version mismatch and needs no `playwright install`.
     const browser = await chromium.launch({
       headless: false,
-      channel: 'chrome',
+      ...(CHANNEL ? { channel: CHANNEL } : {}), // bundled Chromium unless we fell back to system Chrome
       args: [`--window-position=${box.x},${box.y}`, `--window-size=${box.width},${box.height}`, ...NO_THROTTLE],
     })
     browsers.push(browser)
