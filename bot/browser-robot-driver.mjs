@@ -43,6 +43,10 @@ const SEATS = Math.max(1, Math.min(16, Number(args.seats) || 4))
 const PACE = String(args.pace || 'watch')
 const LAUNCHER = String(args.launcher || 'http://localhost:5180').replace(/\/$/, '')
 const [SCREEN_W, SCREEN_H] = String(args.screen || '1920x1080').split('x').map(Number)
+// Top-left of the monitor to tile onto (Chrome's window coords span all displays). Set
+// --origin "x,y" (or ROBOT_ORIGIN via the launcher) to your large monitor's top-left; e.g. a
+// monitor to the LEFT of the primary is negative x, to the RIGHT is x ≥ primary width.
+const [ORIGIN_X, ORIGIN_Y] = String(args.origin || '0,0').split(',').map(Number)
 
 if (!INSTANCE || INSTANCE === true) {
   console.error('ERROR: --instance <matcherInstanceId> is required.')
@@ -60,8 +64,19 @@ function tile(index, total) {
   const cols = Math.ceil(Math.sqrt(total))
   const w = Math.floor(SCREEN_W / cols)
   const h = Math.floor(SCREEN_H / Math.ceil(total / cols))
-  return { x: (index % cols) * w, y: Math.floor(index / cols) * h, width: w, height: h }
+  return { x: ORIGIN_X + (index % cols) * w, y: ORIGIN_Y + Math.floor(index / cols) * h, width: w, height: h }
 }
+
+// ⚠ ANTI-THROTTLING FLAGS — load-bearing. With many tiled windows most are in the
+// background, and Chrome THROTTLES background timers. The Beer Game gates its Submit button
+// on animation timers ("Please wait for animations…"), so a throttled background window
+// never enables Submit and its seat stalls (the "stuck on week 2, 0/4 submitted" symptom).
+// These keep every window's timers running at full speed so the bots can play unfocused.
+const NO_THROTTLE = [
+  '--disable-background-timer-throttling',
+  '--disable-backgrounding-occluded-windows',
+  '--disable-renderer-backgrounding',
+]
 
 // ── the student's raw matcher launch URL (login screen; we drive from there) ────
 async function studentUrlFor(seatIndex) {
@@ -120,44 +135,52 @@ async function readIncomingOrder(page) {
   return nums && nums.length ? Number(nums[nums.length - 1]) : null
 }
 
+/** The current week, read from the "WEEK N" heading — the per-week guard so we order once. */
+async function readWeek(page) {
+  const txt = await page.getByText(/week\s+\d+/i).first().innerText().catch(() => '')
+  const m = txt.match(/(\d+)/)
+  return m ? Number(m[1]) : null
+}
+
 async function isGameOver(page) {
-  const over = page.getByText(/game over/i)
-  return (await over.count().catch(() => 0)) > 0
+  return (await page.getByText(/game over/i).count().catch(() => 0)) > 0
+}
+
+/** True once the submit button leaves "Submit order" (i.e. the order was accepted). */
+async function submitLanded(btn) {
+  const t = (await btn.innerText().catch(() => '')) || ''
+  return !/submit order/i.test(t)
 }
 
 async function playBeerGame(page, label) {
-  let weeksPlayed = 0
+  let lastWeek = 0, weeksPlayed = 0
   const start = Date.now()
   const MAX_MS = 60 * 60 * 1000
   while (Date.now() - start < MAX_MS) {
     if (await isGameOver(page)) { console.log(`[${label}] Beer Game over — ${weeksPlayed} week(s) played`); return }
 
-    const btn = page.locator('button.pv-order-btn')
+    const btn = page.locator('button.pv-order-btn').first()
     if (await btn.count() === 0) { await sleep(POLL_MS); continue }
-    const btnText = (await btn.first().innerText().catch(() => '')) || ''
-    // Ready to order only when the button offers it (animations done, not already submitted).
-    if (!/submit order/i.test(btnText)) { await sleep(POLL_MS); continue }
-    if (await btn.first().isDisabled().catch(() => true)) { await sleep(POLL_MS); continue }
+    const btnText = (await btn.innerText().catch(() => '')) || ''
+    const ready = /submit order/i.test(btnText) && !(await btn.isDisabled().catch(() => true))
+    const week = await readWeek(page)
 
-    await think()
-    const incoming = await readIncomingOrder(page)
-    const order = Number.isFinite(incoming) && incoming != null ? incoming : DEFAULT_ORDER
-
-    const input = page.locator('input.pv-order-input').first()
-    await input.fill(String(order)).catch(() => {})
-    console.log(`[${label}] ordering ${order} (incoming ${incoming ?? '?'})`)
-    await btn.first().click().catch(() => {})
-
-    // Wait until the button leaves "Submit order" (submitted, or the next week's animations).
-    const before = btnText
-    const t0 = Date.now()
-    while (Date.now() - t0 < 30000) {
+    // Order once per NEW week, only when the button actually offers it (animations done).
+    if (ready && week != null && week > lastWeek) {
+      await think()
+      const incoming = await readIncomingOrder(page)
+      const order = incoming != null && Number.isFinite(incoming) ? incoming : DEFAULT_ORDER
+      await page.locator('input.pv-order-input').first().fill(String(order)).catch(() => {})
+      await btn.click().catch(() => {})
+      // Confirm the order landed before advancing the week guard — else retry next loop.
+      const t0 = Date.now()
+      let landed = false
+      while (Date.now() - t0 < 6000) { await sleep(500); if (await submitLanded(btn)) { landed = true; break } }
+      if (landed) { lastWeek = week; weeksPlayed++; console.log(`[${label}] week ${week}: ordered ${order} (incoming ${incoming ?? '?'})`) }
+      else console.log(`[${label}] week ${week}: submit did not land — retrying`)
+    } else {
       await sleep(POLL_MS)
-      if (await isGameOver(page)) break
-      const now = (await btn.first().innerText().catch(() => '')) || ''
-      if (now !== before || /waiting for team|please wait/i.test(now)) break
     }
-    weeksPlayed++
   }
   console.warn(`[${label}] ⚠ stopped after ${weeksPlayed} week(s) — game did not end within the cap`)
 }
@@ -184,7 +207,7 @@ async function main() {
     const browser = await chromium.launch({
       headless: false,
       channel: 'chrome',
-      args: [`--window-position=${box.x},${box.y}`, `--window-size=${box.width},${box.height}`],
+      args: [`--window-position=${box.x},${box.y}`, `--window-size=${box.width},${box.height}`, ...NO_THROTTLE],
     })
     browsers.push(browser)
     const page = await browser.newPage({ viewport: { width: box.width, height: box.height - 90 } })

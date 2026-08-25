@@ -68,6 +68,23 @@ const App: React.FC = () => {
     })();
   }, []);
 
+  // Reload-resume: the deep-link effect above strips ?class=&sid= from the URL after the
+  // first load, so a plain browser RELOAD would otherwise land a classroom student back on
+  // the Beer Game's own home/instructor screen. If this tab already holds a player session
+  // (sessionStorage, set above), restore PlayerView — it reads the same keys. Only when
+  // there is no deep-link to process.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("class")) return; // the deep-link effect owns this load
+    if (
+      sessionStorage.getItem(PLAYER_GAME_CODE_KEY) &&
+      sessionStorage.getItem(PLAYER_ID_KEY) &&
+      sessionStorage.getItem(PLAYER_TOKEN_KEY)
+    ) {
+      setView("player");
+    }
+  }, []);
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (nextUser) => {
       setUser(nextUser);
