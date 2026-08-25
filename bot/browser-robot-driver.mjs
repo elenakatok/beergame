@@ -176,8 +176,14 @@ async function main() {
   const runs = []
   for (let i = 0; i < SEATS; i++) {
     const box = tile(i, SEATS)
+    // ⚠ channel:'chrome' uses the system Google Chrome, NOT Playwright's bundled Chromium.
+    // The Beer Game's Playwright (1.59) wants a Chromium build that isn't in the shared
+    // ms-playwright cache (the other games run 1.62 → chromium-1234, which IS installed), so
+    // the bundled path 404s with "Executable doesn't exist". Using the installed Chrome
+    // sidesteps the version mismatch and needs no `playwright install`.
     const browser = await chromium.launch({
       headless: false,
+      channel: 'chrome',
       args: [`--window-position=${box.x},${box.y}`, `--window-size=${box.width},${box.height}`],
     })
     browsers.push(browser)
