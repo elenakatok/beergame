@@ -182,12 +182,6 @@ async function isGameOver(page) {
   return (await page.getByText(/game over/i).count().catch(() => 0)) > 0
 }
 
-/** True once the submit button leaves "Submit order" (i.e. the order was accepted). */
-async function submitLanded(btn) {
-  const t = (await btn.innerText().catch(() => '')) || ''
-  return !/submit order/i.test(t)
-}
-
 async function playBeerGame(page, label) {
   // Shrink the whole Beer Game so it fits this small tiled window (the analogue of Cmd-minus)
   // — the animation + Submit button are otherwise below the fold and never seen/reached. Set
@@ -196,12 +190,12 @@ async function playBeerGame(page, label) {
   const applyZoom = () => page.evaluate((z) => { document.documentElement.style.zoom = String(z) }, ZOOM).catch(() => {})
   await applyZoom()
 
-  let lastWeek = 0, weeksPlayed = 0
+  let submissions = 0
   const start = Date.now()
   const MAX_MS = 60 * 60 * 1000
   let lastIdleLog = 0
   while (Date.now() - start < MAX_MS) {
-    if (await isGameOver(page)) { console.log(`[${label}] Beer Game over — ${weeksPlayed} week(s) played`); return }
+    if (await isGameOver(page)) { console.log(`[${label}] Beer Game over — ${submissions} order(s) submitted`); return }
     await applyZoom() // keep the fit even if the page ever remounts
 
     const btn = page.locator('button.pv-order-btn').first()
@@ -210,25 +204,26 @@ async function playBeerGame(page, label) {
     const ready = /submit order/i.test(btnText) && !(await btn.isDisabled().catch(() => true))
     const week = await readWeek(page)
 
-    // Order once per NEW week, only when the button actually offers it (animations done).
-    if (ready && week != null && week > lastWeek) {
+    // ⚠ THE BUTTON IS THE TRUTH — no week guard. The button reads "Submit order" ONLY when
+    // this seat can and must submit (canOrder, not yet submitted). Submit whenever it does.
+    // If a click doesn't register the button stays "Submit order" and the next loop retries;
+    // once submitted the button leaves "Submit order" until the next week. So this is
+    // self-correcting and can never falsely skip a week (the earlier lastWeek guard did:
+    // a click during "Please wait…" looked like it landed and blocked the real submit).
+    if (ready) {
       await think()
       const incoming = await readIncomingOrder(page)
       const order = incoming != null && Number.isFinite(incoming) ? incoming : DEFAULT_ORDER
       await page.locator('input.pv-order-input').first().fill(String(order)).catch(() => {})
       await btn.click().catch(() => {})
-      // Confirm the order landed before advancing the week guard — else retry next loop.
-      const t0 = Date.now()
-      let landed = false
-      while (Date.now() - t0 < 6000) { await sleep(500); if (await submitLanded(btn)) { landed = true; break } }
-      if (landed) { lastWeek = week; weeksPlayed++; console.log(`[${label}] week ${week}: ordered ${order} (incoming ${incoming ?? '?'})`) }
-      else console.log(`[${label}] week ${week}: submit did not land — retrying`)
+      submissions++
+      console.log(`[${label}] week ${week ?? '?'}: ordered ${order} (incoming ${incoming ?? '?'})`)
+      await sleep(1500) // let the click register before re-reading the button
     } else {
-      // ── Diagnostic: WHY is this seat not ordering right now? The button text says:
+      // ── Diagnostic: WHY idle? The button text says:
       //   "Please wait for animations…"       → animation still running (occlusion/rAF)
       //   "Reconnect to submit"                → connection unhealthy (heartbeat timers)
       //   "Order submitted – waiting for team" → THIS seat is done; a teammate is behind
-      // Logged at most every ~12s so a genuinely-waiting seat is visible without spamming.
       if (Date.now() - lastIdleLog > 12000) {
         console.log(`[${label}] week ${week ?? '?'} idle — button: "${btnText.trim().replace(/\s+/g, ' ')}"`)
         lastIdleLog = Date.now()
@@ -236,7 +231,7 @@ async function playBeerGame(page, label) {
       await sleep(POLL_MS)
     }
   }
-  console.warn(`[${label}] ⚠ stopped after ${weeksPlayed} week(s) — game did not end within the cap`)
+  console.warn(`[${label}] ⚠ stopped after ${submissions} order(s) — game did not end within the cap`)
 }
 
 async function runSeat(page, label) {
@@ -274,7 +269,9 @@ async function main() {
       args: [`--window-position=${box.x},${box.y}`, `--window-size=${box.width},${box.height}`, ...NO_THROTTLE],
     })
     browsers.push(browser)
-    const page = await browser.newPage({ viewport: null })
+    // Explicit viewport (matches the window). ⚠ NOT viewport:null — that rendered the headed
+    // windows blank white. CSS zoom (playBeerGame) shrinks the content to fit this viewport.
+    const page = await browser.newPage({ viewport: { width: box.width, height: box.height - 90 } })
     const url = await studentUrlFor(i)
     await page.goto(url, { waitUntil: 'domcontentloaded' })
     runs.push(runSeat(page, `seat ${i}`).catch((e) => console.error(`[seat ${i}]`, e.message)))
