@@ -1,5 +1,5 @@
 import React from "react";
-import { ROLES, TeamState } from "../../logic/gameModel";
+import { ROLES, TeamState, WeekRecord } from "../../logic/gameModel";
 import { ROLE_COLORS, ROLE_LABELS } from "./chartConstants";
 
 interface TeamOrdersLineChartProps {
@@ -7,6 +7,13 @@ interface TeamOrdersLineChartProps {
   maxY?: number;
   width?: number;
   height?: number;
+  /**
+   * Which per-week value to plot. Defaults to the order placed (backward compatible), so
+   * existing callers are unchanged. The class report reuses this with inventory instead.
+   */
+  valueFor?: (h: WeekRecord) => number;
+  /** Metric name for the aria-label + tooltips (e.g. "Orders", "Inventory"). */
+  metricLabel?: string;
 }
 
 const TeamOrdersLineChart: React.FC<TeamOrdersLineChartProps> = ({
@@ -14,11 +21,13 @@ const TeamOrdersLineChart: React.FC<TeamOrdersLineChartProps> = ({
   maxY = 25,
   width = 360,
   height = 160,
+  valueFor = (h) => h.orderPlaced ?? 0,
+  metricLabel = "Orders",
 }) => {
   const series = ROLES.map((role) => ({
     role,
     label: ROLE_LABELS[role],
-    values: (team.stages[role].history || []).map((h) => h.orderPlaced ?? 0),
+    values: (team.stages[role].history || []).map((h) => valueFor(h) ?? 0),
   }));
 
   const maxWeeks = series.reduce((max, s) => Math.max(max, s.values.length), 1);
@@ -48,7 +57,7 @@ const TeamOrdersLineChart: React.FC<TeamOrdersLineChartProps> = ({
       <svg
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label={`Orders over time for ${team.name}`}
+        aria-label={`${metricLabel} over time for ${team.name}`}
         preserveAspectRatio="xMidYMid meet"
       >
         <line
@@ -100,7 +109,7 @@ const TeamOrdersLineChart: React.FC<TeamOrdersLineChartProps> = ({
             const y = getY(v);
             return (
               <circle key={`${s.role}-${idx}`} cx={x} cy={y} r={2} fill={ROLE_COLORS[s.role]}>
-                <title>{`${s.label} Week ${idx + 1}: ${v}`}</title>
+                <title>{`${s.label} Week ${idx + 1}: ${v} (${metricLabel})`}</title>
               </circle>
             );
           })
