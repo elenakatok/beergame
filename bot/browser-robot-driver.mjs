@@ -192,6 +192,7 @@ async function playBeerGame(page, label) {
   let lastWeek = 0, weeksPlayed = 0
   const start = Date.now()
   const MAX_MS = 60 * 60 * 1000
+  let lastIdleLog = 0
   while (Date.now() - start < MAX_MS) {
     if (await isGameOver(page)) { console.log(`[${label}] Beer Game over — ${weeksPlayed} week(s) played`); return }
 
@@ -215,6 +216,15 @@ async function playBeerGame(page, label) {
       if (landed) { lastWeek = week; weeksPlayed++; console.log(`[${label}] week ${week}: ordered ${order} (incoming ${incoming ?? '?'})`) }
       else console.log(`[${label}] week ${week}: submit did not land — retrying`)
     } else {
+      // ── Diagnostic: WHY is this seat not ordering right now? The button text says:
+      //   "Please wait for animations…"       → animation still running (occlusion/rAF)
+      //   "Reconnect to submit"                → connection unhealthy (heartbeat timers)
+      //   "Order submitted – waiting for team" → THIS seat is done; a teammate is behind
+      // Logged at most every ~12s so a genuinely-waiting seat is visible without spamming.
+      if (Date.now() - lastIdleLog > 12000) {
+        console.log(`[${label}] week ${week ?? '?'} idle — button: "${btnText.trim().replace(/\s+/g, ' ')}"`)
+        lastIdleLog = Date.now()
+      }
       await sleep(POLL_MS)
     }
   }
