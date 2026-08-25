@@ -98,15 +98,20 @@ function tile(index) {
   return { x: ORIGIN_X + (index % COLS) * w, y: ORIGIN_Y + Math.floor(index / COLS) * h, width: w, height: h }
 }
 
-// ⚠ ANTI-THROTTLING FLAGS — load-bearing. With many tiled windows most are in the
-// background, and Chrome THROTTLES background timers. The Beer Game gates its Submit button
-// on animation timers ("Please wait for animations…"), so a throttled background window
-// never enables Submit and its seat stalls (the "stuck on week 2, 0/4 submitted" symptom).
-// These keep every window's timers running at full speed so the bots can play unfocused.
+// ⚠ ANTI-THROTTLING / ANTI-OCCLUSION FLAGS — load-bearing, and the ORDER OF DISCOVERY
+// matters: the Beer Game gates its Submit button on a requestAnimationFrame animation, and
+// macOS Chrome PAUSES rAF for any window it considers OCCLUDED — which, with many windows,
+// is every window except the frontmost. That's why a stalled seat "wakes up" the moment you
+// click it and freezes again when you click away. `CalculateNativeWinOcclusion` is Chrome's
+// occlusion detector; disabling that FEATURE (not just backgrounding-occluded-windows) is
+// what actually keeps every window's rAF running so all seats play unfocused. The timer
+// flags stay for setTimeout/setInterval; IntensiveWakeUpThrottling is the aggressive
+// background-timer clamp.
 const NO_THROTTLE = [
   '--disable-background-timer-throttling',
   '--disable-backgrounding-occluded-windows',
   '--disable-renderer-backgrounding',
+  '--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling',
 ]
 
 // ── the student's raw matcher launch URL (login screen; we drive from there) ────
