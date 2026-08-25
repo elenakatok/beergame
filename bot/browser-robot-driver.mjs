@@ -189,12 +189,20 @@ async function submitLanded(btn) {
 }
 
 async function playBeerGame(page, label) {
+  // Shrink the whole Beer Game so it fits this small tiled window (the analogue of Cmd-minus)
+  // — the animation + Submit button are otherwise below the fold and never seen/reached. Set
+  // on <html> after the redirect landed us on the Beer Game; it persists (the SPA never
+  // navigates again during play). Re-applied cheaply each loop in case a remount clears it.
+  const applyZoom = () => page.evaluate((z) => { document.documentElement.style.zoom = String(z) }, ZOOM).catch(() => {})
+  await applyZoom()
+
   let lastWeek = 0, weeksPlayed = 0
   const start = Date.now()
   const MAX_MS = 60 * 60 * 1000
   let lastIdleLog = 0
   while (Date.now() - start < MAX_MS) {
     if (await isGameOver(page)) { console.log(`[${label}] Beer Game over — ${weeksPlayed} week(s) played`); return }
+    await applyZoom() // keep the fit even if the page ever remounts
 
     const btn = page.locator('button.pv-order-btn').first()
     if (await btn.count() === 0) { await sleep(POLL_MS); continue }
@@ -240,12 +248,12 @@ async function runSeat(page, label) {
 
 // ⚠ FIT THE WHOLE BEER GAME IN A SMALL TILED WINDOW. The play screen is ~1000×860 CSS px; a
 // tiled window is far smaller, so at 100% the animation + Submit button render BELOW the fold
-// (Elena: zooming to ~67% makes them visible). A shrunk device-scale-factor gives the page a
-// LARGER logical viewport (cssViewport = windowPx / dsf) so the full screen lays out and is
-// simply displayed small — the automation analogue of Cmd-minus. Computed from the tile size
-// so the whole design fits; clamped so text stays legible.
+// (Elena: zooming to ~67% makes them visible). We shrink the page with CSS `zoom` (applied to
+// <html> once we're on the Beer Game — see playBeerGame), which is the automation analogue of
+// Cmd-minus. NOT --force-device-scale-factor + viewport:null: that renders the window blank
+// white in headed Chrome even though the DOM works. Computed from the tile size; clamped.
 const box0 = tile(0)
-const DSF = Math.max(0.35, Math.min(1, Math.min(box0.width / 1000, (box0.height - 90) / 860)))
+const ZOOM = Math.max(0.4, Math.min(1, Math.min(box0.width / 1000, (box0.height - 90) / 860)))
 
 // ── main ───────────────────────────────────────────────────────────────────────
 async function main() {
@@ -263,16 +271,9 @@ async function main() {
     const browser = await chromium.launch({
       headless: false,
       channel: 'chrome',
-      args: [
-        `--window-position=${box.x},${box.y}`,
-        `--window-size=${box.width},${box.height}`,
-        `--force-device-scale-factor=${DSF.toFixed(2)}`,
-        ...NO_THROTTLE,
-      ],
+      args: [`--window-position=${box.x},${box.y}`, `--window-size=${box.width},${box.height}`, ...NO_THROTTLE],
     })
     browsers.push(browser)
-    // viewport:null → use the real window size; with the shrunk device scale the CSS viewport
-    // is bigger, so the whole Beer Game screen fits without clipping.
     const page = await browser.newPage({ viewport: null })
     const url = await studentUrlFor(i)
     await page.goto(url, { waitUntil: 'domcontentloaded' })
