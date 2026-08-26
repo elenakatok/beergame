@@ -4,15 +4,16 @@
     "predeploy": ["npm --prefix \"$RESOURCE_DIR\" run build"]
   },
   "hosting": {
-    "source": ".",
+    "public": "dist",
+    "predeploy": ["npm --prefix \"$PROJECT_DIR\" run build"],
     "ignore": [
       "firebase.json",
       "**/.*",
       "**/node_modules/**"
     ],
-    "frameworksBackend": {
-      "region": "us-central1"
-    }
+    "rewrites": [
+      { "source": "**", "destination": "/index.html" }
+    ]
   },
   "firestore": {
     "database": "(default)",
