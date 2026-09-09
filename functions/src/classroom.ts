@@ -13,14 +13,15 @@
 //     posts the matched groups; we create ONE session per class, build a team per
 //     group with the four supply-chain roles assigned, bot-fill absent seats
 //     (product decision #8), and return per-student seat info for deep links.
-//   • resumeClassPlayer      (student-facing callable): the deep-linked student
-//     exchanges their classroom studentId for their pre-assigned seat
-//     (playerId / role / sessionToken), which drives the existing PlayerView.
+//   • resumeClassPlayer      (student-facing, plain HTTP): the deep-linked student
+//     exchanges a SIGNED SEAT TOKEN for their pre-assigned seat (playerId / role /
+//     sessionToken), which drives the existing PlayerView. No Firebase auth, no shared
+//     secret in the browser — the token the matcher minted is the whole credential (D2/D3).
 //
 // This file is additive and self-contained (no edits to Enno's index.ts beyond a
 // re-export), to keep merges with upstream cheap.
 
-import { onCall, onRequest, HttpsError } from "firebase-functions/v2/https";
+import { onRequest, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { defineSecret } from "firebase-functions/params";
@@ -34,12 +35,10 @@ import {
   GameConfig,
 } from "./engine";
 import { pickTeamName } from "./teamNames";
+import { verifySeatToken } from "./seatToken";
 
 const CLASSROOM_PROVISION_SECRET = defineSecret("CLASSROOM_PROVISION_SECRET");
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-// App Check is opt-in (see index.ts): enforced only when APPCHECK_ENFORCE=true.
-const ENFORCE_APP_CHECK =
-  process.env.FUNCTIONS_EMULATOR !== "true" && process.env.APPCHECK_ENFORCE === "true";
 
 const db = () => admin.firestore();
 
@@ -54,10 +53,10 @@ const db = () => admin.firestore();
 // wrong one — there is no unversioned path. No real student has run through this contract,
 // so there is nothing to migrate, and a shim would outlive the reason for it.
 //
-// ⚠ Scope of this pass: the three SERVER-TO-SERVER endpoints below, which are the
-// matcher→guest surface D7 names. `resumeClassPlayer` is student→guest, is an onCall whose
-// auth model D3 replaces wholesale in the seat-token pass, and is deliberately untouched
-// here — versioning it now would drag the beergame SPA into this deploy for no benefit.
+// ⚠ ALL FOUR endpoints now carry contract_version. Pass A covered the three
+// server-to-server ones and deliberately excluded resumeClassPlayer because it was then a
+// student→guest callable rather than a matcher→guest surface; D3 changed that surface, so
+// the exclusion ended with it.
 
 export const CONTRACT_VERSION = 1;
 
@@ -76,7 +75,16 @@ type ContractErrorCode =
   | "NOT_FOUND"
   | "NOT_A_CLASSROOM_SESSION"
   | "CODE_ALLOCATION_FAILED"
-  | "INTERNAL";
+  | "INTERNAL"
+  // ── D2/D3 seat-claim surface ──
+  | "STUDENT_ID_REQUIRED"
+  | "SEAT_TOKEN_REQUIRED"
+  | "SEAT_TOKEN_MALFORMED"
+  | "SEAT_TOKEN_INVALID"
+  | "SEAT_TOKEN_EXPIRED"
+  | "SEAT_NOT_FOUND"
+  | "SEAT_LOCK_INVALID"
+  | "SEAT_PLAYER_MISSING";
 
 /** Every error body: structured, coded, and carrying the version — including 500s. */
 function sendError(
@@ -143,21 +151,9 @@ function newSessionToken(): string {
 function normalizeName(raw: string): string {
   return raw.trim().toLowerCase().replace(/\s+/g, " ").replaceAll("/", "_");
 }
-/**
- * The throwing wrapper, kept for `resumeClassPlayer` ONLY — it is an onCall, where an
- * HttpsError is the correct way to return an error and is mapped properly by the SDK.
- * The two onRequest handlers use validateGameCode directly (D8).
- */
-function parseGameCode(raw: unknown): string {
-  const v = validateGameCode(raw);
-  if (!v.ok) throw new HttpsError("invalid-argument", v.message);
-  return v.code;
-}
-function requireAuthUid(request: { auth?: { uid?: string } | null }): string {
-  const uid = request.auth?.uid;
-  if (!uid) throw new HttpsError("unauthenticated", "Authentication is required.");
-  return uid;
-}
+// ⚠ parseGameCode (the HttpsError-throwing wrapper) and requireAuthUid are GONE. They
+// existed only for resumeClassPlayer while it was an onCall; D3 made it plain HTTP, so
+// every handler in this file now uses validateGameCode and returns structured errors.
 function sanitizeConfig(input: unknown): GameConfig {
   const base = defaultConfig();
   if (!input || typeof input !== "object") return base;
@@ -423,50 +419,103 @@ export const finalizeClassSession = onRequest(
 );
 
 /**
- * resumeClassPlayer — student-facing. The deep-linked student (anonymously
- * authenticated) exchanges { gameCode, studentId } for their pre-assigned seat.
- * Mints a fresh session token, exactly like joinOrResumePlayer's reconnect path,
- * so the existing PlayerView + submitPlayerOrder work unchanged.
+ * resumeClassPlayer — the deep-linked student exchanges a SIGNED SEAT TOKEN for their
+ * pre-assigned seat. Mints a fresh beergame session token, exactly like joinOrResumePlayer's
+ * reconnect path, so the existing PlayerView + submitPlayerOrder work unchanged.
  *
- * NOTE (production hardening, deferred): the studentId should be proven by a
- * signed classroom token rather than trusted from the client. For the guest
- * bridge slice it is looked up directly.
+ * D3 — "The seat claim becomes plain HTTP with the shared secret, and stops being a Firebase
+ * callable. Today resumeClassPlayer is an onCall requiring an anonymous Firebase uid. That
+ * uid identifies nobody — it exists only so the endpoint has some auth — and it binds every
+ * guest game to Firebase. Once D2 supplies real proof of identity, the anonymous login has
+ * no job left. After this change the entire contract is stack-agnostic HTTP."
+ *
+ * ⚠ THE STUDENT DOES NOT CARRY THE SHARED SECRET — it signs the token, it is never sent.
+ * The browser presents only the HMAC the matcher minted for that one seat. There is no
+ * Authorization header on this endpoint: the seat token IS the credential. That is what
+ * makes the whole contract implementable without Firebase.
+ *
+ * ⚠ D1: no unsigned fallback. A missing, malformed, wrong or expired token is a refusal,
+ * never a downgrade to the old behaviour. The 2026-09-09 production run took a live seat
+ * with nothing but a gameCode and a studentId; a fallback would leave that door open.
+ *
+ * Unlike the other three endpoints this one is student-facing, so it carries
+ * contract_version (pass A excluded it only because it was not then a matcher→guest
+ * surface) but no bearer secret.
  */
-export const resumeClassPlayer = onCall(
-  { enforceAppCheck: ENFORCE_APP_CHECK, maxInstances: 100 },
-  async (request) => {
-    requireAuthUid(request);
-    const gameCode = parseGameCode(request.data?.gameCode);
-    const studentId = String(request.data?.studentId ?? "").trim();
-    if (!studentId) throw new HttpsError("invalid-argument", "studentId is required.");
-
-    const gameRef = db().collection("games").doc(gameCode);
-    const lockSnap = await gameRef.collection("classroomPlayers").doc(studentId).get();
-    if (!lockSnap.exists) {
-      throw new HttpsError("not-found", "No seat found for this student in this session.");
+export const resumeClassPlayer = onRequest(
+  { secrets: [CLASSROOM_PROVISION_SECRET], cors: true, maxInstances: 100 },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      sendError(res, 405, "METHOD_NOT_ALLOWED", "This endpoint accepts POST only.");
+      return;
     }
-    const playerId = (lockSnap.data() as { playerId?: string }).playerId;
-    if (!playerId) throw new HttpsError("failed-precondition", "Seat lock is invalid.");
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const vErr = contractVersionError(body);
+    if (vErr) {
+      sendError(res, 400, vErr.code, vErr.message);
+      return;
+    }
+    const parsed = validateGameCode(body.gameCode);
+    if (!parsed.ok) {
+      sendError(res, 400, "INVALID_GAME_CODE", parsed.message);
+      return;
+    }
+    const gameCode = parsed.code;
+    const studentId = String(body.studentId ?? "").trim();
+    if (!studentId) {
+      sendError(res, 400, "STUDENT_ID_REQUIRED", "studentId is required.");
+      return;
+    }
 
-    const playerRef = gameRef.collection("players").doc(playerId);
-    const playerSnap = await playerRef.get();
-    if (!playerSnap.exists) throw new HttpsError("not-found", "Seat player record is missing.");
-    const player = playerSnap.data() as Record<string, unknown>;
+    // D2: prove the claim BEFORE touching any seat state. Verification is pure — no reads,
+    // no writes — so an unsigned or expired guess never reaches Firestore and can never
+    // stamp lastHeartbeatAt (which is what `participated` grades on).
+    const verdict = verifySeatToken(body.seatToken, gameCode, studentId, CLASSROOM_PROVISION_SECRET.value());
+    if (!verdict.ok) {
+      const status = verdict.code === "SEAT_TOKEN_REQUIRED" ? 400 : 401;
+      sendError(res, status, verdict.code, verdict.message);
+      return;
+    }
 
-    const token = newSessionToken();
-    await playerRef.update({
-      sessionTokenHash: hashToken(token),
-      lastHeartbeatAt: FieldValue.serverTimestamp(),
-    });
+    try {
+      const gameRef = db().collection("games").doc(gameCode);
+      const lockSnap = await gameRef.collection("classroomPlayers").doc(studentId).get();
+      if (!lockSnap.exists) {
+        sendError(res, 404, "SEAT_NOT_FOUND", "No seat found for this student in this session.");
+        return;
+      }
+      const playerId = (lockSnap.data() as { playerId?: string }).playerId;
+      if (!playerId) {
+        sendError(res, 409, "SEAT_LOCK_INVALID", "Seat lock is invalid.");
+        return;
+      }
 
-    return {
-      playerId,
-      role: player.role ?? null,
-      teamId: player.teamId ?? null,
-      teamName: player.teamName ?? null,
-      name: player.name ?? null,
-      sessionToken: token,
-    };
+      const playerRef = gameRef.collection("players").doc(playerId);
+      const playerSnap = await playerRef.get();
+      if (!playerSnap.exists) {
+        sendError(res, 404, "SEAT_PLAYER_MISSING", "Seat player record is missing.");
+        return;
+      }
+      const player = playerSnap.data() as Record<string, unknown>;
+
+      const token = newSessionToken();
+      await playerRef.update({
+        sessionTokenHash: hashToken(token),
+        lastHeartbeatAt: FieldValue.serverTimestamp(),
+      });
+
+      sendOk(res, {
+        playerId,
+        role: player.role ?? null,
+        teamId: player.teamId ?? null,
+        teamName: player.teamName ?? null,
+        name: player.name ?? null,
+        sessionToken: token,
+      });
+    } catch (err) {
+      logger.error("resumeClassPlayer failed", { gameCode, err: String(err) });
+      sendError(res, 500, "INTERNAL", "Claiming the seat failed.");
+    }
   }
 );
 

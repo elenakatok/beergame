@@ -77,12 +77,14 @@ export interface ClassSeatResponse {
   sessionToken: string;
 }
 
-// Classroom deep-link: a student exchanges their classroom studentId for the
-// seat pre-assigned by provisionClassSession. Mirrors joinOrResumePlayer.
-const resumeClassPlayerFn = httpsCallable<
-  { gameCode: string; studentId: string },
-  ClassSeatResponse
->(functions, "resumeClassPlayer");
+// Classroom deep-link (D2/D3): PLAIN HTTP, not a callable. The student presents the
+// signed seat token the matcher minted; there is no Firebase auth and no shared secret in
+// the browser. `functions` is still imported for every OTHER callable in this file — only
+// this one endpoint left the callable protocol, because only this one is part of the
+// stack-agnostic guest contract a third party has to reimplement.
+const RESUME_URL =
+  (import.meta.env.VITE_RESUME_CLASS_PLAYER_URL as string | undefined) ??
+  "https://us-central1-beergame-mygames-live.cloudfunctions.net/resumeClassPlayer";
 
 const submitPlayerOrderFn = httpsCallable<
   { gameCode: string; playerId: string; sessionToken: string; order: number },
@@ -145,12 +147,29 @@ export async function joinOrResumePlayer(input: {
   return unwrap(await joinOrResumePlayerFn(input));
 }
 
+/**
+ * Claim a pre-assigned seat with a signed seat token (D2/D3).
+ * ⚠ No ensurePlayerAuth() — the anonymous Firebase login this used to require identified
+ * nobody and existed only so an onCall had some auth. The token is the credential now.
+ * Errors arrive as pass A's structured bodies: { contract_version, error: { code, message } }.
+ */
 export async function resumeClassPlayer(input: {
   gameCode: string;
   studentId: string;
-}) {
-  await ensurePlayerAuth();
-  return unwrap(await resumeClassPlayerFn(input));
+  seatToken: string;
+}): Promise<ClassSeatResponse> {
+  const res = await fetch(RESUME_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ contract_version: 1, ...input }),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const code = body?.error?.code ?? `HTTP_${res.status}`;
+    const message = body?.error?.message ?? `Seat claim failed (HTTP ${res.status}).`;
+    throw new Error(`${code}: ${message}`);
+  }
+  return body as ClassSeatResponse;
 }
 
 export async function submitPlayerOrder(input: {

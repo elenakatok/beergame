@@ -42,18 +42,22 @@ const App: React.FC = () => {
   const [verifyMessage, setVerifyMessage] = useState<string | null>(null);
   const [verifyError, setVerifyError] = useState<string | null>(null);
 
-  // Classroom deep-link entry: a student arrives at /?class=<gameCode>&sid=<studentId>.
-  // Exchange the studentId for the pre-assigned seat and drop straight into PlayerView.
+  // Classroom deep-link entry: /?class=<gameCode>&sid=<studentId>&t=<signed seat token>.
+  // The token (D2) is what proves the claim — sid alone is no longer accepted by the guest,
+  // which is the whole point: on 2026-09-09 a stranger took a live seat with sid alone.
+  // The matcher re-mints on every render of its redirect screen, so a token that has
+  // expired is fixed by reopening the link from the classroom rather than by any fallback.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const rawCode = params.get("class");
     const studentId = params.get("sid");
-    if (!rawCode || !studentId) return;
+    const seatToken = params.get("t");
+    if (!rawCode || !studentId || !seatToken) return;
     const gameCode = rawCode.trim().toUpperCase();
     setClassResume("loading");
     (async () => {
       try {
-        const seat = await resumeClassPlayer({ gameCode, studentId });
+        const seat = await resumeClassPlayer({ gameCode, studentId, seatToken });
         sessionStorage.setItem(PLAYER_GAME_CODE_KEY, gameCode);
         sessionStorage.setItem(PLAYER_ID_KEY, seat.playerId);
         sessionStorage.setItem(PLAYER_ROLE_KEY, seat.role ?? "pending");
