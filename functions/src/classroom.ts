@@ -43,6 +43,96 @@ const ENFORCE_APP_CHECK =
 
 const db = () => admin.firestore();
 
+// ── CONTRACT v1 (spec D7, D8) ─────────────────────────────────────────────────
+//
+// D7 — "Every matcher→guest request carries contract_version, and the guest rejects an
+// unknown major. Echoed in every response. Starts at 1."
+// D8 — "Errors are structured JSON with a stable machine-readable code, on every status
+// including 500. HttpsError must not escape an onRequest handler."
+//
+// ⚠ D1: no compatibility shim. An ABSENT contract_version is a rejection, exactly like a
+// wrong one — there is no unversioned path. No real student has run through this contract,
+// so there is nothing to migrate, and a shim would outlive the reason for it.
+//
+// ⚠ Scope of this pass: the three SERVER-TO-SERVER endpoints below, which are the
+// matcher→guest surface D7 names. `resumeClassPlayer` is student→guest, is an onCall whose
+// auth model D3 replaces wholesale in the seat-token pass, and is deliberately untouched
+// here — versioning it now would drag the beergame SPA into this deploy for no benefit.
+
+export const CONTRACT_VERSION = 1;
+
+/**
+ * Stable, machine-readable error codes. These are part of the contract: a third-party
+ * implementation is expected to emit the same strings, and the conformance harness asserts
+ * them. Add codes; do not rename or repurpose them.
+ */
+type ContractErrorCode =
+  | "METHOD_NOT_ALLOWED"
+  | "UNAUTHORIZED"
+  | "CONTRACT_VERSION_REQUIRED"
+  | "UNSUPPORTED_CONTRACT_VERSION"
+  | "GROUPS_REQUIRED"
+  | "INVALID_GAME_CODE"
+  | "NOT_FOUND"
+  | "NOT_A_CLASSROOM_SESSION"
+  | "CODE_ALLOCATION_FAILED"
+  | "INTERNAL";
+
+/** Every error body: structured, coded, and carrying the version — including 500s. */
+function sendError(
+  res: { status: (n: number) => { json: (b: unknown) => void } },
+  status: number,
+  code: ContractErrorCode,
+  message: string,
+): void {
+  res.status(status).json({ contract_version: CONTRACT_VERSION, error: { code, message } });
+}
+
+/** Every success body echoes the version alongside its own fields. */
+function sendOk(
+  res: { status: (n: number) => { json: (b: unknown) => void } },
+  payload: Record<string, unknown>,
+): void {
+  res.status(200).json({ contract_version: CONTRACT_VERSION, ...payload });
+}
+
+/**
+ * D7's gate. Returns null when the request may proceed, or the error to send.
+ * Absent is rejected as firmly as unknown — see the D1 note above.
+ */
+function contractVersionError(
+  body: Record<string, unknown>,
+): { code: ContractErrorCode; message: string } | null {
+  const raw = body["contract_version"];
+  if (raw === undefined || raw === null) {
+    return {
+      code: "CONTRACT_VERSION_REQUIRED",
+      message: `contract_version is required and must be ${CONTRACT_VERSION}.`,
+    };
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n !== CONTRACT_VERSION) {
+    return {
+      code: "UNSUPPORTED_CONTRACT_VERSION",
+      message: `contract_version ${String(raw)} is not supported; this guest speaks ${CONTRACT_VERSION}.`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Pure game-code validation — no throwing, so an onRequest handler can turn a bad code into
+ * a structured 400 instead of letting an HttpsError escape as an unstructured 500 (D8).
+ * ⚠ Production was observed on 2026-09-09 returning HTTP 500 with a non-JSON body
+ * "Internal Server Error" for the code BEER01. That is precisely what this removes.
+ */
+function validateGameCode(raw: unknown): { ok: true; code: string } | { ok: false; message: string } {
+  if (typeof raw !== "string") return { ok: false, message: "gameCode is required." };
+  const code = raw.trim().toUpperCase();
+  if (!/^[A-Z2-9]{4,8}$/.test(code)) return { ok: false, message: "Invalid game code." };
+  return { ok: true, code };
+}
+
 // ── small local helpers (kept here so this file stays self-contained) ─────────
 function hashToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -53,11 +143,15 @@ function newSessionToken(): string {
 function normalizeName(raw: string): string {
   return raw.trim().toLowerCase().replace(/\s+/g, " ").replaceAll("/", "_");
 }
+/**
+ * The throwing wrapper, kept for `resumeClassPlayer` ONLY — it is an onCall, where an
+ * HttpsError is the correct way to return an error and is mapped properly by the SDK.
+ * The two onRequest handlers use validateGameCode directly (D8).
+ */
 function parseGameCode(raw: unknown): string {
-  if (typeof raw !== "string") throw new HttpsError("invalid-argument", "gameCode is required.");
-  const code = raw.trim().toUpperCase();
-  if (!/^[A-Z2-9]{4,8}$/.test(code)) throw new HttpsError("invalid-argument", "Invalid game code.");
-  return code;
+  const v = validateGameCode(raw);
+  if (!v.ok) throw new HttpsError("invalid-argument", v.message);
+  return v.code;
 }
 function requireAuthUid(request: { auth?: { uid?: string } | null }): string {
   const uid = request.auth?.uid;
@@ -123,18 +217,25 @@ export const provisionClassSession = onRequest(
   { secrets: [CLASSROOM_PROVISION_SECRET], cors: true, maxInstances: 20 },
   async (req, res) => {
     if (req.method !== "POST") {
-      res.status(405).json({ error: "method-not-allowed" });
+      sendError(res, 405, "METHOD_NOT_ALLOWED", "This endpoint accepts POST only.");
       return;
     }
     if (!bearerMatches(req.headers.authorization, CLASSROOM_PROVISION_SECRET.value())) {
-      res.status(401).json({ error: "unauthorized" });
+      sendError(res, 401, "UNAUTHORIZED", "A valid provisioning secret is required.");
       return;
     }
 
     const body = (req.body ?? {}) as { config?: unknown; groups?: unknown; instanceId?: unknown };
+
+    const vErr = contractVersionError(body as Record<string, unknown>);
+    if (vErr) {
+      sendError(res, 400, vErr.code, vErr.message);
+      return;
+    }
+
     const groups = Array.isArray(body.groups) ? (body.groups as ProvisionGroup[]) : null;
     if (!groups || groups.length === 0) {
-      res.status(400).json({ error: "groups[] is required" });
+      sendError(res, 400, "GROUPS_REQUIRED", "groups[] is required and must be non-empty.");
       return;
     }
     // The classroom's game_instances/<id> — used as game_instance_id when results
@@ -143,6 +244,13 @@ export const provisionClassSession = onRequest(
       typeof body.instanceId === "string" && body.instanceId.trim() ? body.instanceId.trim() : null;
 
     const config = sanitizeConfig(body.config);
+
+    // ⚠ D8: everything from here down runs inside a try. generateUniqueGameCode throws an
+    // HttpsError on exhaustion, and an HttpsError escaping an onRequest surfaces as an
+    // unstructured 500 — the exact shape this pass removes. Any unexpected throw (a
+    // Firestore write failing mid-batch, say) also lands as a coded 500 rather than a
+    // bare "Internal Server Error".
+    try {
     const code = await generateUniqueGameCode();
     const now = Timestamp.now();
     const expiresAt = Timestamp.fromMillis(now.toMillis() + THIRTY_DAYS_MS);
@@ -241,7 +349,17 @@ export const provisionClassSession = onRequest(
 
     await batch.commit();
     logger.info("provisionClassSession created", { gameCode: code, groups: groups.length, seats: seats.length });
-    res.json({ gameCode: code, seats });
+    sendOk(res, { gameCode: code, seats });
+    } catch (err) {
+      const isExhausted = err instanceof HttpsError && err.code === "internal";
+      logger.error("provisionClassSession failed", { err: String(err) });
+      sendError(
+        res,
+        500,
+        isExhausted ? "CODE_ALLOCATION_FAILED" : "INTERNAL",
+        isExhausted ? "Could not allocate a game code." : "Provisioning failed.",
+      );
+    }
   }
 );
 
@@ -257,32 +375,50 @@ export const finalizeClassSession = onRequest(
   { secrets: [CLASSROOM_PROVISION_SECRET], cors: true, maxInstances: 20 },
   async (req, res) => {
     if (req.method !== "POST") {
-      res.status(405).json({ error: "method-not-allowed" });
+      sendError(res, 405, "METHOD_NOT_ALLOWED", "This endpoint accepts POST only.");
       return;
     }
     if (!bearerMatches(req.headers.authorization, CLASSROOM_PROVISION_SECRET.value())) {
-      res.status(401).json({ error: "unauthorized" });
+      sendError(res, 401, "UNAUTHORIZED", "A valid provisioning secret is required.");
       return;
     }
-    const gameCode = parseGameCode((req.body ?? {}).gameCode);
-    const gameRef = db().collection("games").doc(gameCode);
-    const snap = await gameRef.get();
-    if (!snap.exists) {
-      res.status(404).json({ error: "not-found" });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const vErr = contractVersionError(body);
+    if (vErr) {
+      sendError(res, 400, vErr.code, vErr.message);
       return;
     }
-    const data = snap.data() as Record<string, unknown>;
-    if (data.source !== "classroom") {
-      res.status(403).json({ error: "not-a-classroom-session" });
+    // ⚠ D8: validateGameCode instead of parseGameCode — a bad code is a structured 400,
+    // never an HttpsError escaping as an unstructured 500.
+    const parsed = validateGameCode(body.gameCode);
+    if (!parsed.ok) {
+      sendError(res, 400, "INVALID_GAME_CODE", parsed.message);
       return;
     }
-    if (data.status === "ended") {
-      res.json({ ok: true, alreadyEnded: true });
-      return;
+    const gameCode = parsed.code;
+    try {
+      const gameRef = db().collection("games").doc(gameCode);
+      const snap = await gameRef.get();
+      if (!snap.exists) {
+        sendError(res, 404, "NOT_FOUND", "No session with that game code.");
+        return;
+      }
+      const data = snap.data() as Record<string, unknown>;
+      if (data.source !== "classroom") {
+        sendError(res, 403, "NOT_A_CLASSROOM_SESSION", "That session was not provisioned by the classroom.");
+        return;
+      }
+      if (data.status === "ended") {
+        sendOk(res, { ok: true, alreadyEnded: true });
+        return;
+      }
+      await gameRef.update({ status: "ended", endedAt: FieldValue.serverTimestamp() });
+      logger.info("finalizeClassSession ended session", { gameCode });
+      sendOk(res, { ok: true });
+    } catch (err) {
+      logger.error("finalizeClassSession failed", { gameCode, err: String(err) });
+      sendError(res, 500, "INTERNAL", "Finalizing the session failed.");
     }
-    await gameRef.update({ status: "ended", endedAt: FieldValue.serverTimestamp() });
-    logger.info("finalizeClassSession ended session", { gameCode });
-    res.json({ ok: true });
   }
 );
 
@@ -344,18 +480,26 @@ export const resumeClassPlayer = onCall(
 export const getClassResults = onRequest(
   { secrets: [CLASSROOM_PROVISION_SECRET], cors: true, maxInstances: 20 },
   async (req, res) => {
-    if (req.method !== "POST") { res.status(405).json({ error: "method-not-allowed" }); return; }
-    if (!bearerMatches(req.headers.authorization, CLASSROOM_PROVISION_SECRET.value())) {
-      res.status(401).json({ error: "unauthorized" }); return;
+    if (req.method !== "POST") {
+      sendError(res, 405, "METHOD_NOT_ALLOWED", "This endpoint accepts POST only."); return;
     }
-    const gameCode = parseGameCode((req.body ?? {}).gameCode);
+    if (!bearerMatches(req.headers.authorization, CLASSROOM_PROVISION_SECRET.value())) {
+      sendError(res, 401, "UNAUTHORIZED", "A valid provisioning secret is required."); return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const vErr = contractVersionError(body);
+    if (vErr) { sendError(res, 400, vErr.code, vErr.message); return; }
+    const parsed = validateGameCode(body.gameCode);
+    if (!parsed.ok) { sendError(res, 400, "INVALID_GAME_CODE", parsed.message); return; }
+    const gameCode = parsed.code;
+    try {
     const gameRef = db().collection("games").doc(gameCode);
     const [gameSnap, teamsSnap, playersSnap] = await Promise.all([
       gameRef.get(),
       gameRef.collection("teams").get(),
       gameRef.collection("players").get(),
     ]);
-    if (!gameSnap.exists) { res.status(404).json({ error: "not-found" }); return; }
+    if (!gameSnap.exists) { sendError(res, 404, "NOT_FOUND", "No session with that game code."); return; }
 
     // Each team's total cost + role → individual cost (sum of that stage's weekly cost).
     const teams = teamsSnap.docs.map((d) => {
@@ -392,6 +536,10 @@ export const getClassResults = onRequest(
         };
       });
 
-    res.json({ ok: true, gameCode, teams, players });
+    sendOk(res, { ok: true, gameCode, teams, players });
+    } catch (err) {
+      logger.error("getClassResults failed", { gameCode, err: String(err) });
+      sendError(res, 500, "INTERNAL", "Reading session results failed.");
+    }
   }
 );
