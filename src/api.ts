@@ -73,7 +73,8 @@ export interface ClassSeatResponse {
   role: string | null;
   teamId: string | null;
   teamName: string | null;
-  name: string | null;
+  // No `name`: the seat claim stopped returning one in pass C (D4 — no student name crosses
+  // the boundary). Nothing here ever read it.
   sessionToken: string;
 }
 

@@ -76,6 +76,13 @@ type ContractErrorCode =
   | "NOT_A_CLASSROOM_SESSION"
   | "CODE_ALLOCATION_FAILED"
   | "INTERNAL"
+  // ── D5 seat-count surface (pass C) ──
+  | "SEAT_COUNT_REQUIRED"
+  | "SEAT_COUNT_MISMATCH"
+  | "GROUP_EMPTY"
+  | "GROUP_OVERFULL"
+  | "MEMBER_STUDENT_ID_REQUIRED"
+  | "DUPLICATE_STUDENT_ID"
   // ── D2/D3 seat-claim surface ──
   | "STUDENT_ID_REQUIRED"
   | "SEAT_TOKEN_REQUIRED"
@@ -86,14 +93,19 @@ type ContractErrorCode =
   | "SEAT_LOCK_INVALID"
   | "SEAT_PLAYER_MISSING";
 
-/** Every error body: structured, coded, and carrying the version — including 500s. */
+/**
+ * Every error body: structured, coded, and carrying the version — including 500s.
+ * `extra` adds machine-readable detail to the error object — e.g. expectedSeatCount, which
+ * is how a caller learns this guest's seat count (D5) without a separate endpoint.
+ */
 function sendError(
   res: { status: (n: number) => { json: (b: unknown) => void } },
   status: number,
   code: ContractErrorCode,
   message: string,
+  extra: Record<string, unknown> = {},
 ): void {
-  res.status(status).json({ contract_version: CONTRACT_VERSION, error: { code, message } });
+  res.status(status).json({ contract_version: CONTRACT_VERSION, error: { code, message, ...extra } });
 }
 
 /** Every success body echoes the version alongside its own fields. */
@@ -193,9 +205,10 @@ function bearerMatches(header: string | undefined, secret: string): boolean {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+// D4: a member is { studentId } and nothing else. A stray displayName is never READ, so this
+// guest cannot store a student name even if a caller sends one.
 interface ProvisionMember {
   studentId: string;
-  displayName?: string;
 }
 interface ProvisionGroup {
   groupId?: string;
@@ -203,11 +216,28 @@ interface ProvisionGroup {
 }
 
 /**
- * provisionClassSession — server-to-server. Classroom posts:
- *   { config?: Partial<GameConfig>, groups: [{ groupId?, members: [{ studentId, displayName? }] }] }
- * We create one session per class, one team per group (roles shuffled onto the
- * present members, absent seats bot-filled), and return { gameCode, seats }.
+ * provisionClassSession — server-to-server. The matcher posts:
+ *   { contract_version: 1, seatCount, instanceId?, config?: Partial<GameConfig>,
+ *     groups: [{ groupId?, members: [{ studentId }] }] }
+ * We create one session per call and one team per group (roles shuffled onto the present
+ * members, absent seats bot-filled), and return
+ *   { contract_version, gameCode, seatCount, seats: [one per member], groups: [one per group] }.
  * Auth: Authorization: Bearer <CLASSROOM_PROVISION_SECRET>.
+ *
+ * ── PASS C (D4, D5) ────────────────────────────────────────────────────────────
+ * D4 — "displayName is removed from the provision body. It is the only PII on the wire." A
+ *   classroom player's name IS its opaque studentId; the real roster lives on the matcher.
+ * D5 — "The expected seat count is sent explicitly, and a mismatch is an error." seatCount
+ *   must equal ROLES.length: missing → SEAT_COUNT_REQUIRED, different → SEAT_COUNT_MISMATCH,
+ *   both carrying error.expectedSeatCount. Then, per group, BEFORE anything is written:
+ *     OVER-FULL  → REJECTED (GROUP_OVERFULL). It used to be sliced to ROLES.length with no
+ *                  error and no log, and the dropped student got a link that dead-ended.
+ *     UNDER-FULL → ACCEPTED and REPORTED. This is the designed bot-fill path — the matcher
+ *                  posts humans only and this guest fills the rest — so it cannot be an
+ *                  error. What was wrong was the SILENCE: groups[].botSeats now says how many
+ *                  seats went to bots, and the matcher checks it against its own count (D6).
+ *     EMPTY group, member with no studentId, a studentId twice → REJECTED. The old code
+ *                  skipped a nameless member silently; a duplicate collided on the seat lock.
  */
 export const provisionClassSession = onRequest(
   { secrets: [CLASSROOM_PROVISION_SECRET], cors: true, maxInstances: 20 },
@@ -221,7 +251,7 @@ export const provisionClassSession = onRequest(
       return;
     }
 
-    const body = (req.body ?? {}) as { config?: unknown; groups?: unknown; instanceId?: unknown };
+    const body = (req.body ?? {}) as { config?: unknown; groups?: unknown; instanceId?: unknown; seatCount?: unknown };
 
     const vErr = contractVersionError(body as Record<string, unknown>);
     if (vErr) {
@@ -229,10 +259,68 @@ export const provisionClassSession = onRequest(
       return;
     }
 
+    // D5 — checked BEFORE groups[], so a caller probing with an empty groups[] learns this
+    // guest's seat count and nothing is written (the conformance harness relies on the order).
+    // A number only: "4" is not 4, and a caller sending a string has a bug worth naming.
+    const seatCount = ROLES.length;
+    if (body.seatCount === undefined || body.seatCount === null) {
+      sendError(res, 400, "SEAT_COUNT_REQUIRED",
+        `seatCount is required; this guest seats ${seatCount} per group.`,
+        { expectedSeatCount: seatCount });
+      return;
+    }
+    if (body.seatCount !== seatCount) {
+      sendError(res, 400, "SEAT_COUNT_MISMATCH",
+        `seatCount ${JSON.stringify(body.seatCount)} does not match this guest's ${seatCount} seats per group.`,
+        { expectedSeatCount: seatCount });
+      return;
+    }
+
     const groups = Array.isArray(body.groups) ? (body.groups as ProvisionGroup[]) : null;
     if (!groups || groups.length === 0) {
       sendError(res, 400, "GROUPS_REQUIRED", "groups[] is required and must be non-empty.");
       return;
+    }
+
+    // D5 — validate the WHOLE request before a single write, so a bad second group can never
+    // leave a half-built session behind.
+    const seen = new Set<string>();
+    const planned: Array<{ groupId: string; studentIds: string[] }> = [];
+    for (let gi = 0; gi < groups.length; gi += 1) {
+      const group = (groups[gi] ?? {}) as ProvisionGroup;
+      const groupId =
+        typeof group.groupId === "string" && group.groupId.trim() ? group.groupId.trim() : `group-${gi + 1}`;
+      const members: unknown[] = Array.isArray(group.members) ? group.members : [];
+      if (members.length === 0) {
+        sendError(res, 400, "GROUP_EMPTY", `groups[${gi}] (${groupId}) has no members.`,
+          { groupIndex: gi, groupId });
+        return;
+      }
+      if (members.length > seatCount) {
+        sendError(res, 400, "GROUP_OVERFULL",
+          `groups[${gi}] (${groupId}) has ${members.length} members for ${seatCount} seats.`,
+          { groupIndex: gi, groupId, expectedSeatCount: seatCount });
+        return;
+      }
+      const studentIds: string[] = [];
+      for (let mi = 0; mi < members.length; mi += 1) {
+        const raw = (members[mi] as { studentId?: unknown } | null)?.studentId;
+        const studentId = typeof raw === "string" ? raw.trim() : "";
+        if (!studentId) {
+          sendError(res, 400, "MEMBER_STUDENT_ID_REQUIRED",
+            `groups[${gi}].members[${mi}] has no studentId.`, { groupIndex: gi, memberIndex: mi });
+          return;
+        }
+        if (seen.has(studentId)) {
+          sendError(res, 400, "DUPLICATE_STUDENT_ID",
+            `studentId ${studentId} appears more than once in this request.`,
+            { groupIndex: gi, memberIndex: mi });
+          return;
+        }
+        seen.add(studentId);
+        studentIds.push(studentId);
+      }
+      planned.push({ groupId, studentIds });
     }
     // The classroom's game_instances/<id> — used as game_instance_id when results
     // are pushed back to the gradebook. Falls back to the game code if absent.
@@ -272,6 +360,15 @@ export const provisionClassSession = onRequest(
       playerId: string;
       groupId: string;
     }> = [];
+    // D5: how every group's seats were filled. The matcher checks humanSeats/botSeats against
+    // its own count (D6); this is what makes a bot-filled seat visible across the boundary.
+    const groupReports: Array<{
+      groupId: string;
+      teamId: string;
+      humanSeats: number;
+      botSeats: number;
+      botRoles: Role[];
+    }> = [];
 
     // Friendly, on-theme team names ("Hoppy Campers") instead of the raw matcher group
     // UUID. `usedTeamNames` keeps them distinct across the groups in this call. The real
@@ -279,16 +376,11 @@ export const provisionClassSession = onRequest(
     // NOT the display name, and grade attribution keys on classroomStudentId regardless.
     const usedTeamNames = new Set<string>();
 
-    groups.forEach((group, gi) => {
+    planned.forEach((plan, gi) => {
       const teamId = `team${gi + 1}`;
       const teamName = pickTeamName(gi, usedTeamNames);
-      const realGroupId =
-        typeof group.groupId === "string" && group.groupId.trim()
-          ? group.groupId.trim()
-          : `group-${gi + 1}`;
       const team = createInitialTeamState(teamId, teamName);
 
-      const members = Array.isArray(group.members) ? group.members.slice(0, ROLES.length) : [];
       // Shuffle role order so seat assignment is fair across a class.
       const roleOrder = [...ROLES];
       for (let i = roleOrder.length - 1; i > 0; i -= 1) {
@@ -296,16 +388,16 @@ export const provisionClassSession = onRequest(
         [roleOrder[i], roleOrder[j]] = [roleOrder[j], roleOrder[i]];
       }
 
-      members.forEach((m, mi) => {
+      // Every id here was validated above, and there are never more than seatCount of them,
+      // so each member gets a role — nothing is skipped or dropped at this point.
+      plan.studentIds.forEach((studentId, mi) => {
         const role = roleOrder[mi];
-        const studentId = String(m?.studentId ?? "").trim();
-        if (!role || !studentId) return;
-        const displayName = String(m?.displayName ?? studentId).trim() || studentId;
-
+        // D4: the opaque studentId is the only identity this guest ever holds for a
+        // classroom player — it stands in for the name wherever the game shows one.
         const playerRef = gameRef.collection("players").doc();
         batch.set(playerRef, {
-          name: displayName,
-          normalizedName: normalizeName(displayName),
+          name: studentId,
+          normalizedName: normalizeName(studentId),
           classroomStudentId: studentId,
           createdAt: FieldValue.serverTimestamp(),
           isRobot: false,
@@ -325,27 +417,36 @@ export const provisionClassSession = onRequest(
         });
 
         team.stages[role].playerId = playerRef.id;
-        team.stages[role].playerName = displayName;
+        team.stages[role].playerName = studentId;
         team.stages[role].isRobot = false;
         team.humanCount += 1;
-        seats.push({ studentId, role, teamId, playerId: playerRef.id, groupId: realGroupId });
+        seats.push({ studentId, role, teamId, playerId: playerRef.id, groupId: plan.groupId });
       });
 
-      // Bot-fill any seat with no present student (product decision #8).
+      // Bot-fill every seat with no present student (product decision #8) — and SAY which.
+      const botRoles: Role[] = [];
       for (const role of ROLES) {
         if (team.stages[role].playerId == null) {
           team.stages[role].playerId = null;
           team.stages[role].playerName = "Beer GPT";
           team.stages[role].isRobot = true;
+          botRoles.push(role);
         }
       }
+      groupReports.push({
+        groupId: plan.groupId, teamId,
+        humanSeats: plan.studentIds.length, botSeats: botRoles.length, botRoles,
+      });
 
       batch.set(gameRef.collection("teams").doc(teamId), team);
     });
 
     await batch.commit();
-    logger.info("provisionClassSession created", { gameCode: code, groups: groups.length, seats: seats.length });
-    sendOk(res, { gameCode: code, seats });
+    logger.info("provisionClassSession created", {
+      gameCode: code, groups: planned.length, seats: seats.length,
+      botSeats: groupReports.reduce((n, g) => n + g.botSeats, 0),
+    });
+    sendOk(res, { gameCode: code, seatCount, seats, groups: groupReports });
     } catch (err) {
       const isExhausted = err instanceof HttpsError && err.code === "internal";
       logger.error("provisionClassSession failed", { err: String(err) });
@@ -504,12 +605,14 @@ export const resumeClassPlayer = onRequest(
         lastHeartbeatAt: FieldValue.serverTimestamp(),
       });
 
+      // D4: NO name in the seat claim. It used to hand back the displayName the matcher had
+      // posted — the one place a student name crossed back out of this project. Nothing read
+      // it (the client keys on playerId/role/sessionToken), and the guest no longer holds one.
       sendOk(res, {
         playerId,
         role: player.role ?? null,
         teamId: player.teamId ?? null,
         teamName: player.teamName ?? null,
-        name: player.name ?? null,
         sessionToken: token,
       });
     } catch (err) {
@@ -549,6 +652,13 @@ export const getClassResults = onRequest(
       gameRef.collection("players").get(),
     ]);
     if (!gameSnap.exists) { sendError(res, 404, "NOT_FOUND", "No session with that game code."); return; }
+    // D9 — "getClassResults gets the source !== 'classroom' guard that finalize already has."
+    // Without it, any game code readable with the secret returned costs — including sessions
+    // the classroom never provisioned.
+    if ((gameSnap.data() as Record<string, unknown>).source !== "classroom") {
+      sendError(res, 403, "NOT_A_CLASSROOM_SESSION", "That session was not provisioned by the classroom.");
+      return;
+    }
 
     // Each team's total cost + role → individual cost (sum of that stage's weekly cost).
     const teams = teamsSnap.docs.map((d) => {
