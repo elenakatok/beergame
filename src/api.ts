@@ -73,8 +73,9 @@ export interface ClassSeatResponse {
   role: string | null;
   teamId: string | null;
   teamName: string | null;
-  // No `name`: the seat claim stopped returning one in pass C (D4 — no student name crosses
-  // the boundary). Nothing here ever read it.
+  // Present when the matcher supplied a display name (a tenant that declares names — the Beer
+  // Game does). Optional because a tenant that declined names gets no name field.
+  name?: string | null;
   sessionToken: string;
 }
 

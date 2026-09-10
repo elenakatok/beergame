@@ -205,10 +205,12 @@ function bearerMatches(header: string | undefined, secret: string): boolean {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-// D4: a member is { studentId } and nothing else. A stray displayName is never READ, so this
-// guest cannot store a student name even if a caller sends one.
+// displayName is OPTIONAL: the matcher sends it only for a tenant that declares it receives
+// display names (matcher tenants.ts `receivesDisplayNames`). The Beer Game declares yes — its
+// screens show players to each other by name. Absent → the player is shown by studentId.
 interface ProvisionMember {
   studentId: string;
+  displayName?: string;
 }
 interface ProvisionGroup {
   groupId?: string;
@@ -218,15 +220,18 @@ interface ProvisionGroup {
 /**
  * provisionClassSession — server-to-server. The matcher posts:
  *   { contract_version: 1, seatCount, instanceId?, config?: Partial<GameConfig>,
- *     groups: [{ groupId?, members: [{ studentId }] }] }
+ *     groups: [{ groupId?, members: [{ studentId, displayName? }] }] }
  * We create one session per call and one team per group (roles shuffled onto the present
  * members, absent seats bot-filled), and return
  *   { contract_version, gameCode, seatCount, seats: [one per member], groups: [one per group] }.
  * Auth: Authorization: Bearer <CLASSROOM_PROVISION_SECRET>.
  *
  * ── PASS C (D4, D5) ────────────────────────────────────────────────────────────
- * D4 — "displayName is removed from the provision body. It is the only PII on the wire." A
- *   classroom player's name IS its opaque studentId; the real roster lives on the matcher.
+ * NAMES — pass C's D4 removed displayName from the wire; that is REVERSED (2026-09-10). A
+ *   member carries displayName when its tenant declares it receives names, and the player's
+ *   name is that displayName. Without one the player is shown by studentId — correct for a
+ *   tenant that declined names, not a degraded fallback. The seat claim returns `name` only
+ *   when a displayName was supplied.
  * D5 — "The expected seat count is sent explicitly, and a mismatch is an error." seatCount
  *   must equal ROLES.length: missing → SEAT_COUNT_REQUIRED, different → SEAT_COUNT_MISMATCH,
  *   both carrying error.expectedSeatCount. Then, per group, BEFORE anything is written:
@@ -285,7 +290,7 @@ export const provisionClassSession = onRequest(
     // D5 — validate the WHOLE request before a single write, so a bad second group can never
     // leave a half-built session behind.
     const seen = new Set<string>();
-    const planned: Array<{ groupId: string; studentIds: string[] }> = [];
+    const planned: Array<{ groupId: string; studentIds: string[]; displayNames: unknown[] }> = [];
     for (let gi = 0; gi < groups.length; gi += 1) {
       const group = (groups[gi] ?? {}) as ProvisionGroup;
       const groupId =
@@ -303,6 +308,7 @@ export const provisionClassSession = onRequest(
         return;
       }
       const studentIds: string[] = [];
+      const displayNames: unknown[] = [];
       for (let mi = 0; mi < members.length; mi += 1) {
         const raw = (members[mi] as { studentId?: unknown } | null)?.studentId;
         const studentId = typeof raw === "string" ? raw.trim() : "";
@@ -319,8 +325,9 @@ export const provisionClassSession = onRequest(
         }
         seen.add(studentId);
         studentIds.push(studentId);
+        displayNames.push((members[mi] as { displayName?: unknown } | null)?.displayName);
       }
-      planned.push({ groupId, studentIds });
+      planned.push({ groupId, studentIds, displayNames });
     }
     // The classroom's game_instances/<id> — used as game_instance_id when results
     // are pushed back to the gradebook. Falls back to the game code if absent.
@@ -392,12 +399,19 @@ export const provisionClassSession = onRequest(
       // so each member gets a role — nothing is skipped or dropped at this point.
       plan.studentIds.forEach((studentId, mi) => {
         const role = roleOrder[mi];
-        // D4: the opaque studentId is the only identity this guest ever holds for a
-        // classroom player — it stands in for the name wherever the game shows one.
+        // RESTORED from before pass C (9377a6d), line for line: the player's name is the
+        // displayName the matcher sent, falling back to studentId when none was sent — which
+        // is now the right behaviour for a tenant that declined names, not a defect covered up.
+        const rawName = plan.displayNames[mi];
+        const displayName = String(rawName ?? studentId).trim() || studentId;
+        // Whether a name was actually SUPPLIED. Only this decides whether the seat claim
+        // returns one, so a tenant that declined names can never be handed a name.
+        const nameFromClassroom = rawName != null && String(rawName).trim() !== "";
         const playerRef = gameRef.collection("players").doc();
         batch.set(playerRef, {
-          name: studentId,
-          normalizedName: normalizeName(studentId),
+          name: displayName,
+          normalizedName: normalizeName(displayName),
+          nameFromClassroom,
           classroomStudentId: studentId,
           createdAt: FieldValue.serverTimestamp(),
           isRobot: false,
@@ -417,7 +431,7 @@ export const provisionClassSession = onRequest(
         });
 
         team.stages[role].playerId = playerRef.id;
-        team.stages[role].playerName = studentId;
+        team.stages[role].playerName = displayName;
         team.stages[role].isRobot = false;
         team.humanCount += 1;
         seats.push({ studentId, role, teamId, playerId: playerRef.id, groupId: plan.groupId });
@@ -605,14 +619,17 @@ export const resumeClassPlayer = onRequest(
         lastHeartbeatAt: FieldValue.serverTimestamp(),
       });
 
-      // D4: NO name in the seat claim. It used to hand back the displayName the matcher had
-      // posted — the one place a student name crossed back out of this project. Nothing read
-      // it (the client keys on playerId/role/sessionToken), and the guest no longer holds one.
+      // `name` RESTORED (pass C's D4 removed it; D4 is reversed). Returned only when the
+      // matcher supplied a displayName for this student — i.e. for a tenant that declares it
+      // receives names. A tenant that declined gets no name field at all. (A player doc
+      // written before nameFromClassroom existed has no flag and returns its name, exactly as
+      // the pre-pass-C guest did.)
       sendOk(res, {
         playerId,
         role: player.role ?? null,
         teamId: player.teamId ?? null,
         teamName: player.teamName ?? null,
+        ...(player.nameFromClassroom === false ? {} : { name: player.name ?? null }),
         sessionToken: token,
       });
     } catch (err) {
