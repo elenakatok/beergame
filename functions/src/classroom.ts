@@ -36,6 +36,7 @@ import {
 } from "./engine";
 import { pickTeamName } from "./teamNames";
 import { verifySeatToken } from "./seatToken";
+import { gradeClass } from "./classGrades";
 
 const CLASSROOM_PROVISION_SECRET = defineSecret("CLASSROOM_PROVISION_SECRET");
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -91,7 +92,11 @@ type ContractErrorCode =
   | "SEAT_TOKEN_EXPIRED"
   | "SEAT_NOT_FOUND"
   | "SEAT_LOCK_INVALID"
-  | "SEAT_PLAYER_MISSING";
+  | "SEAT_PLAYER_MISSING"
+  // ── guest-owned grading (Guest_Owned_Grading_Spec_Addendum_v1.md G1/G2) ──
+  | "INSTANCE_ID_REQUIRED"
+  | "GAME_CODES_REQUIRED"
+  | "SESSION_NOT_IN_INSTANCE";
 
 /**
  * Every error body: structured, coded, and carrying the version — including 500s.
@@ -716,6 +721,110 @@ export const getClassResults = onRequest(
     } catch (err) {
       logger.error("getClassResults failed", { gameCode, err: String(err) });
       sendError(res, 500, "INTERNAL", "Reading session results failed.");
+    }
+  }
+);
+
+/**
+ * getClassGrades — server-to-server (same secret). THE GUEST GRADES ITS OWN CLASS.
+ *
+ * Guest_Owned_Grading_Spec_Addendum_v1.md G2 — "A fifth endpoint, getClassGrades, keyed on the
+ * instance, not the session. The matcher provisions one session per group, so a guest answering
+ * per session sees one team and cannot normalize across a class."
+ *
+ * Request:  { contract_version: 1, instanceId, gameCodes: [ …the sessions the matcher recorded… ] }
+ * Reply:    { contract_version: 1, ok: true, instanceId, grades: [ { studentId, value, label } ] }
+ *   One row per student provisioned into the listed sessions. `value` is a finite number, or null
+ *   for a student with no grade (never claimed a seat). The matcher pushes it AS GIVEN into the
+ *   gradebook's normalized_score — the one score field the gradebook renders. (classGrades.ts)
+ *
+ * ⚠ ORPHAN SESSIONS (addendum §6 Q7, §7). provisionClassSession writes a session — carrying this
+ * classroomInstanceId — BEFORE the matcher verifies the reply. When the matcher refuses the
+ * hand-off (D6) it ends that session and re-provisions the same students into a new one. So a
+ * query by instance alone returns orphan sessions and duplicate students. The matcher's group
+ * docs are the only record of which hand-offs it ACCEPTED, so it LISTS them (gameCodes) and this
+ * endpoint grades exactly those: every other session carrying the instance id is excluded. No
+ * marker is needed on the session, so orphans written before this endpoint existed are excluded
+ * too. A listed code that belongs to a different instance is refused, never silently graded.
+ *
+ * gameCodes' ORDER is the matcher's (group-id order). Team costs are pooled in that order so the
+ * z is bit-for-bit the one the matcher computed before grading moved here.
+ */
+export const getClassGrades = onRequest(
+  { secrets: [CLASSROOM_PROVISION_SECRET], cors: true, maxInstances: 20 },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      sendError(res, 405, "METHOD_NOT_ALLOWED", "This endpoint accepts POST only."); return;
+    }
+    if (!bearerMatches(req.headers.authorization, CLASSROOM_PROVISION_SECRET.value())) {
+      sendError(res, 401, "UNAUTHORIZED", "A valid provisioning secret is required."); return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const vErr = contractVersionError(body);
+    if (vErr) { sendError(res, 400, vErr.code, vErr.message); return; }
+
+    const instanceId = typeof body.instanceId === "string" ? body.instanceId.trim() : "";
+    if (!instanceId) {
+      sendError(res, 400, "INSTANCE_ID_REQUIRED", "instanceId is required: grades are keyed on the classroom instance.");
+      return;
+    }
+    if (!Array.isArray(body.gameCodes) || body.gameCodes.length === 0) {
+      sendError(res, 400, "GAME_CODES_REQUIRED",
+        "gameCodes[] is required and must list the sessions the matcher recorded for this instance.");
+      return;
+    }
+    const gameCodes: string[] = [];
+    for (let i = 0; i < body.gameCodes.length; i += 1) {
+      const parsed = validateGameCode(body.gameCodes[i]);
+      if (!parsed.ok) { sendError(res, 400, "INVALID_GAME_CODE", `gameCodes[${i}]: ${parsed.message}`, { index: i }); return; }
+      if (gameCodes.includes(parsed.code)) {
+        sendError(res, 400, "INVALID_GAME_CODE", `gameCodes[${i}] ${parsed.code} is listed twice.`, { index: i });
+        return;
+      }
+      gameCodes.push(parsed.code);
+    }
+
+    try {
+      const games = db().collection("games");
+      const inInstance = await games.where("classroomInstanceId", "==", instanceId).get();
+      const byCode = new Map(inInstance.docs.map((d) => [d.id, d.data() as Record<string, unknown>]));
+      for (const code of gameCodes) {
+        const data = byCode.get(code);
+        if (!data) {
+          const snap = await games.doc(code).get();
+          if (!snap.exists) {
+            sendError(res, 404, "NOT_FOUND", `No session with game code ${code}.`, { gameCode: code });
+          } else {
+            sendError(res, 409, "SESSION_NOT_IN_INSTANCE",
+              `Session ${code} does not belong to instance ${instanceId}.`, { gameCode: code });
+          }
+          return;
+        }
+        if (data.source !== "classroom") {
+          sendError(res, 403, "NOT_A_CLASSROOM_SESSION", `Session ${code} was not provisioned by the classroom.`,
+            { gameCode: code });
+          return;
+        }
+      }
+
+      // Exactly the listed sessions, in the listed order.
+      const sessions = await Promise.all(gameCodes.map(async (gameCode) => {
+        const ref = games.doc(gameCode);
+        const [teamsSnap, playersSnap] = await Promise.all([ref.collection("teams").get(), ref.collection("players").get()]);
+        return {
+          gameCode,
+          teams: teamsSnap.docs.map((d) => ({ teamId: d.id, data: d.data() as Record<string, unknown> })),
+          players: playersSnap.docs.map((d) => d.data() as Record<string, unknown>),
+        };
+      }));
+      const grades = gradeClass(sessions);
+      logger.info("getClassGrades graded the instance", {
+        instanceId, sessions: gameCodes.length, excludedSessions: inInstance.size - gameCodes.length, rows: grades.length,
+      });
+      sendOk(res, { ok: true, instanceId, grades });
+    } catch (err) {
+      logger.error("getClassGrades failed", { instanceId, err: String(err) });
+      sendError(res, 500, "INTERNAL", "Reading the class's grades failed.");
     }
   }
 );
