@@ -34,3 +34,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# local-only emulator env (CLASSROOM_CALLBACK_URL points at 127.0.0.1)
+functions/.env.demo-*
